@@ -1,6 +1,6 @@
 # RowBinary Visualizer
 
-A web-based tool for visualizing ClickHouse RowBinary data, similar to ImHex. Features an interactive hex viewer with AST-based type visualization.
+A web-based tool for visualizing ClickHouse RowBinary data, similar to ImHex. Features an interactive hex viewer with AST-based type visualization. 100% vibecoded with Claude Code.
 
 ![Screenshot](.static/screenshot.png)
 
@@ -11,7 +11,20 @@ A web-based tool for visualizing ClickHouse RowBinary data, similar to ImHex. Fe
 - **Interactive Highlighting**: Selecting a node in the tree highlights corresponding bytes in the hex view (and vice versa)
 - **Full Type Support**: All ClickHouse types including Variant, Dynamic, JSON, Geo types, Nested, etc.
 
-## Setup
+## Quick Start (Docker)
+
+Run with bundled ClickHouse server:
+
+```bash
+docker build -t rowbinary-explorer .
+docker run -d -p 8080:80 rowbinary-explorer
+```
+
+Open http://localhost:8080
+
+## Development Setup
+
+For local development (requires ClickHouse at `localhost:8123`):
 
 ```bash
 npm install

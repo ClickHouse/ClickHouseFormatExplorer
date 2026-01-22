@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<clickhouse>
+    <users>
+        <viewer>
+            <password></password>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>readonly</profile>
+            <quota>default</quota>
+            <access_management>0</access_management>
+        </viewer>
+    </users>
+    <profiles>
+        <readonly>
+            <readonly>1</readonly>
+        </readonly>
+    </profiles>
+</clickhouse>
