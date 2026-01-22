@@ -1,0 +1,105 @@
+.hex-viewer {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  height: 100%;
+  overflow: auto;
+  background: var(--bg-secondary);
+}
+
+.hex-viewer-content {
+  padding: 8px 0;
+}
+
+.hex-row {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  min-height: 22px;
+}
+
+.hex-row:hover {
+  background: var(--hex-highlight-hover);
+}
+
+.hex-address {
+  color: var(--hex-address);
+  width: 70px;
+  flex-shrink: 0;
+  user-select: none;
+  text-align: right;
+  padding-right: 16px;
+}
+
+.hex-bytes {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 2px;
+  margin-right: 20px;
+}
+
+.hex-byte {
+  width: 22px;
+  text-align: center;
+  padding: 1px 2px;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+
+.hex-byte:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.hex-byte.highlighted {
+  background-color: var(--highlight-color, var(--hex-highlight-active));
+}
+
+.hex-byte.active {
+  outline: 2px solid #ffff00;
+  outline-offset: -1px;
+}
+
+.hex-byte.hovered {
+  background-color: var(--hover-color, rgba(255, 255, 255, 0.2));
+}
+
+/* Group separator every 8 bytes */
+.hex-byte.group-end {
+  margin-right: 8px;
+}
+
+.hex-ascii {
+  display: flex;
+  color: var(--hex-ascii-printable);
+  border-left: 1px solid var(--border-color);
+  padding-left: 12px;
+}
+
+.hex-ascii-char {
+  width: 9px;
+  text-align: center;
+}
+
+.hex-ascii-char.non-printable {
+  color: var(--hex-ascii-nonprintable);
+}
+
+.hex-ascii-char.highlighted {
+  background-color: var(--highlight-color, var(--hex-highlight-active));
+  color: #000;
+}
+
+.hex-ascii-char.active {
+  outline: 1px solid #ffff00;
+}
+
+/* Empty state */
+.hex-viewer-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+}
