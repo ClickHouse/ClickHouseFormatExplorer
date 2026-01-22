@@ -69,6 +69,7 @@ export function parseType(typeString: string): ClickHouseType {
       Geometry: { kind: 'Geometry' },
       Dynamic: { kind: 'Dynamic' },
       JSON: { kind: 'JSON' },
+      DateTime: { kind: 'DateTime' },
     };
 
     // If next token is not LPAREN, it's a simple type
