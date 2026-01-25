@@ -136,14 +136,39 @@ export class NativeDecoder extends FormatDecoder {
     // Handle complex types that have different columnar encoding
     switch (type.kind) {
       case 'Nullable':
+        return this.decodeNullableColumn(type.inner, rowCount);
       case 'Array':
+        return this.decodeArrayColumn(type.element, rowCount);
       case 'Map':
+        return this.decodeMapColumn(type.key, type.value, rowCount);
       case 'LowCardinality':
+        return this.decodeLowCardinalityColumn(type.inner, rowCount);
       case 'Variant':
+        return this.decodeVariantColumn(type.variants, rowCount);
       case 'Dynamic':
+        return this.decodeDynamicColumn(rowCount);
       case 'JSON':
+        return this.decodeJSONColumn(type, rowCount);
+      case 'Tuple':
+        return this.decodeTupleColumn(type.elements, type.names, rowCount);
       case 'Nested':
         throw new Error(`Native format: ${typeToString(type)} not yet implemented`);
+      // Geometry - Variant of geo types
+      case 'Geometry':
+        return this.decodeGeometryColumn(rowCount);
+      // Geo types - Array-based
+      case 'Ring':
+        return this.decodeRingColumn(rowCount);
+      case 'Polygon':
+        return this.decodePolygonColumn(rowCount);
+      case 'MultiPolygon':
+        return this.decodeMultiPolygonColumn(rowCount);
+      case 'LineString':
+        return this.decodeLineStringColumn(rowCount);
+      case 'MultiLineString':
+        return this.decodeMultiLineStringColumn(rowCount);
+      case 'QBit':
+        return this.decodeQBitColumn(type.element, type.dimension, rowCount);
     }
 
     // Simple types: decode rowCount values sequentially
@@ -213,6 +238,10 @@ export class NativeDecoder extends FormatDecoder {
         return this.decodeDateTime(type.timezone);
       case 'DateTime64':
         return this.decodeDateTime64(type.precision, type.timezone);
+      case 'Time':
+        return this.decodeTime();
+      case 'Time64':
+        return this.decodeTime64(type.precision);
 
       // Special
       case 'UUID':
@@ -245,6 +274,10 @@ export class NativeDecoder extends FormatDecoder {
       // Geo types (same encoding as RowBinary)
       case 'Point':
         return this.decodePoint();
+
+      // QBit vector type
+      case 'QBit':
+        return this.decodeQBit(type.element, type.dimension);
 
       default:
         throw new Error(`Native format: ${typeToString(type)} not yet implemented`);
@@ -553,6 +586,46 @@ export class NativeDecoder extends FormatDecoder {
     };
   }
 
+  private decodeTime(): AstNode {
+    const { value, range } = this.reader.readInt32LE();
+    const sign = value < 0 ? '-' : '';
+    const absValue = Math.abs(value);
+    const hours = Math.floor(absValue / 3600);
+    const minutes = Math.floor((absValue % 3600) / 60);
+    const seconds = absValue % 60;
+
+    return {
+      id: this.generateId(),
+      type: 'Time',
+      byteRange: range,
+      value,
+      displayValue: `${sign}${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`,
+      metadata: { totalSeconds: value },
+    };
+  }
+
+  private decodeTime64(precision: number): AstNode {
+    const { value, range } = this.reader.readInt64LE();
+    const divisor = BigInt(Math.pow(10, precision));
+    const totalSeconds = Number(value / divisor);
+    const subseconds = Number(value % divisor);
+
+    const sign = totalSeconds < 0 ? '-' : '';
+    const absSeconds = Math.abs(totalSeconds);
+    const hours = Math.floor(absSeconds / 3600);
+    const minutes = Math.floor((absSeconds % 3600) / 60);
+    const seconds = absSeconds % 60;
+
+    return {
+      id: this.generateId(),
+      type: `Time64(${precision})`,
+      byteRange: range,
+      value: value.toString(),
+      displayValue: `${sign}${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${Math.abs(subseconds).toString().padStart(precision, '0')}`,
+      metadata: { precision, rawValue: value.toString() },
+    };
+  }
+
   // Special type decoders
   private decodeUUID(): AstNode {
     const { value: bytes, range } = this.reader.readBytes(16);
@@ -714,7 +787,7 @@ export class NativeDecoder extends FormatDecoder {
     };
   }
 
-  // Tuple decoder (same encoding as RowBinary for Native)
+  // Tuple decoder for single value (used in nested contexts)
   private decodeTuple(elements: ClickHouseType[], names?: string[]): AstNode {
     const startOffset = this.reader.offset;
     const children: AstNode[] = [];
@@ -740,6 +813,631 @@ export class NativeDecoder extends FormatDecoder {
     };
   }
 
+  /**
+   * Tuple in Native format (columnar):
+   * Each element stream is written sequentially for all rows
+   * - For Tuple(A, B) with N rows: A0, A1, ..., A(N-1), B0, B1, ..., B(N-1)
+   */
+  private decodeTupleColumn(elements: ClickHouseType[], names: string[] | undefined, rowCount: number): AstNode[] {
+    const typeStr = names
+      ? `Tuple(${elements.map((e, i) => `${names[i]} ${typeToString(e)}`).join(', ')})`
+      : `Tuple(${elements.map(typeToString).join(', ')})`;
+
+    // Read all values for each element type
+    const elementColumns: AstNode[][] = [];
+    for (let i = 0; i < elements.length; i++) {
+      elementColumns.push(this.decodeColumnData(elements[i], rowCount));
+    }
+
+    // Assemble tuples
+    const values: AstNode[] = [];
+    for (let row = 0; row < rowCount; row++) {
+      const children: AstNode[] = [];
+
+      for (let el = 0; el < elements.length; el++) {
+        const label = names?.[el] ?? `[${el}]`;
+        const child = elementColumns[el][row];
+        child.label = label;
+        children.push(child);
+      }
+
+      const startOffset = children[0]?.byteRange.start ?? this.reader.offset;
+      const endOffset = children[children.length - 1]?.byteRange.end ?? this.reader.offset;
+
+      values.push({
+        id: this.generateId(),
+        type: typeStr,
+        byteRange: { start: startOffset, end: endOffset },
+        value: children.map((c) => c.value),
+        displayValue: `(${children.map((c) => c.displayValue).join(', ')})`,
+        label: `[${row}]`,
+        children,
+      });
+    }
+
+    return values;
+  }
+
+  // =========================================
+  // Complex type column decoders (Native-specific)
+  // =========================================
+
+  /**
+   * Nullable in Native format:
+   * 1. NullMap stream: N bytes (0x00 = not null, 0x01 = null)
+   * 2. Values stream: N values of inner type (including placeholders for NULLs)
+   */
+  private decodeNullableColumn(innerType: ClickHouseType, rowCount: number): AstNode[] {
+    const typeStr = `Nullable(${typeToString(innerType)})`;
+
+    // Read null map first
+    const nullMapStart = this.reader.offset;
+    const nullMap: boolean[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const { value } = this.reader.readUInt8();
+      nullMap.push(value !== 0);
+    }
+
+    // Read all values (even for NULLs)
+    const innerValues = this.decodeColumnData(innerType, rowCount);
+
+    // Combine null map with values
+    const values: AstNode[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const isNull = nullMap[i];
+      const innerNode = innerValues[i];
+
+      if (isNull) {
+        values.push({
+          id: this.generateId(),
+          type: typeStr,
+          byteRange: {
+            start: nullMapStart + i,
+            end: innerNode.byteRange.end,
+          },
+          value: null,
+          displayValue: 'NULL',
+          label: `[${i}]`,
+          metadata: { isNull: true },
+        });
+      } else {
+        values.push({
+          id: this.generateId(),
+          type: typeStr,
+          byteRange: {
+            start: nullMapStart + i,
+            end: innerNode.byteRange.end,
+          },
+          value: innerNode.value,
+          displayValue: innerNode.displayValue,
+          label: `[${i}]`,
+          children: innerNode.children,
+          metadata: { isNull: false },
+        });
+      }
+    }
+
+    return values;
+  }
+
+  /**
+   * Array in Native format:
+   * 1. ArraySizes stream: N cumulative offsets as UInt64
+   * 2. ArrayElements stream: flattened elements
+   */
+  private decodeArrayColumn(elementType: ClickHouseType, rowCount: number): AstNode[] {
+    const typeStr = `Array(${typeToString(elementType)})`;
+
+    // Read cumulative offsets
+    const offsetsStart = this.reader.offset;
+    const offsets: bigint[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const { value } = this.reader.readUInt64LE();
+      offsets.push(value);
+    }
+
+    // Calculate total elements and individual array sizes
+    const totalElements = rowCount > 0 ? Number(offsets[rowCount - 1]) : 0;
+    const sizes: number[] = [];
+    let prevOffset = 0n;
+    for (let i = 0; i < rowCount; i++) {
+      sizes.push(Number(offsets[i] - prevOffset));
+      prevOffset = offsets[i];
+    }
+
+    // Read all elements
+    const allElements = this.decodeColumnData(elementType, totalElements);
+    const elementsEnd = this.reader.offset;
+
+    // Distribute elements to arrays
+    const values: AstNode[] = [];
+    let elementIndex = 0;
+    for (let i = 0; i < rowCount; i++) {
+      const size = sizes[i];
+      const arrayElements = allElements.slice(elementIndex, elementIndex + size);
+      elementIndex += size;
+
+      // Update labels for array elements
+      arrayElements.forEach((el, j) => {
+        el.label = `[${j}]`;
+      });
+
+      values.push({
+        id: this.generateId(),
+        type: typeStr,
+        byteRange: { start: offsetsStart + i * 8, end: elementsEnd },
+        value: arrayElements.map(e => e.value),
+        displayValue: `[${arrayElements.map(e => e.displayValue).join(', ')}]`,
+        label: `[${i}]`,
+        children: arrayElements,
+        metadata: { size },
+      });
+    }
+
+    return values;
+  }
+
+  /**
+   * Map in Native format (as Array(Tuple(K, V))):
+   * 1. ArraySizes stream: cumulative offsets
+   * 2. Keys stream: all keys
+   * 3. Values stream: all values
+   */
+  private decodeMapColumn(keyType: ClickHouseType, valueType: ClickHouseType, rowCount: number): AstNode[] {
+    const typeStr = `Map(${typeToString(keyType)}, ${typeToString(valueType)})`;
+
+    // Read cumulative offsets
+    const offsets: bigint[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const { value } = this.reader.readUInt64LE();
+      offsets.push(value);
+    }
+
+    // Calculate sizes
+    const totalEntries = rowCount > 0 ? Number(offsets[rowCount - 1]) : 0;
+    const sizes: number[] = [];
+    let prevOffset = 0n;
+    for (let i = 0; i < rowCount; i++) {
+      sizes.push(Number(offsets[i] - prevOffset));
+      prevOffset = offsets[i];
+    }
+
+    // Read all keys
+    const allKeys = this.decodeColumnData(keyType, totalEntries);
+
+    // Read all values
+    const allValues = this.decodeColumnData(valueType, totalEntries);
+
+    // Distribute to maps
+    const values: AstNode[] = [];
+    let entryIndex = 0;
+    for (let i = 0; i < rowCount; i++) {
+      const size = sizes[i];
+      const entries: AstNode[] = [];
+
+      for (let j = 0; j < size; j++) {
+        const key = allKeys[entryIndex + j];
+        const value = allValues[entryIndex + j];
+
+        key.label = 'key';
+        value.label = 'value';
+
+        entries.push({
+          id: this.generateId(),
+          type: `Tuple(${typeToString(keyType)}, ${typeToString(valueType)})`,
+          byteRange: { start: key.byteRange.start, end: value.byteRange.end },
+          value: [key.value, value.value],
+          displayValue: `${key.displayValue}: ${value.displayValue}`,
+          label: `[${j}]`,
+          children: [key, value],
+        });
+      }
+
+      entryIndex += size;
+
+      values.push({
+        id: this.generateId(),
+        type: typeStr,
+        byteRange: { start: entries[0]?.byteRange.start ?? this.reader.offset, end: this.reader.offset },
+        value: Object.fromEntries(entries.map(e => [e.children![0].value, e.children![1].value])),
+        displayValue: `{${entries.map(e => e.displayValue).join(', ')}}`,
+        label: `[${i}]`,
+        children: entries,
+        metadata: { size },
+      });
+    }
+
+    return values;
+  }
+
+  /**
+   * LowCardinality in Native format:
+   * 1. DictionaryKeys stream: KeysVersion (UInt64)
+   * 2. DictionaryIndexes stream: type + dictionary + indexes
+   */
+  private decodeLowCardinalityColumn(innerType: ClickHouseType, rowCount: number): AstNode[] {
+    const typeStr = `LowCardinality(${typeToString(innerType)})`;
+    const startOffset = this.reader.offset;
+
+    // Read KeysVersion (should be 1)
+    this.reader.readUInt64LE(); // keysVersion - not used
+
+    // Read IndexesSerializationType
+    const { value: serializationType } = this.reader.readUInt64LE();
+
+    // Extract flags from serialization type
+    const indexType = Number(serializationType & 0xFFn);
+    const hasAdditionalKeys = ((serializationType >> 9n) & 1n) === 1n;
+    // const needGlobalDictionary = ((serializationType >> 8n) & 1n) === 1n;
+    // const needUpdateDictionary = ((serializationType >> 10n) & 1n) === 1n;
+
+    // Read additional keys (dictionary)
+    let dictionary: AstNode[] = [];
+    if (hasAdditionalKeys) {
+      const { value: numKeys } = this.reader.readUInt64LE();
+
+      // Determine the actual inner type for decoding (unwrap Nullable if present)
+      const dictType = innerType.kind === 'Nullable' ? innerType.inner : innerType;
+      dictionary = this.decodeColumnData(dictType, Number(numKeys));
+    }
+
+    // Read row count
+    const { value: numRows } = this.reader.readUInt64LE();
+
+    // Read indexes
+    const indexes: number[] = [];
+    for (let i = 0; i < Number(numRows); i++) {
+      let idx: number;
+      switch (indexType) {
+        case 0: // UInt8
+          idx = this.reader.readUInt8().value;
+          break;
+        case 1: // UInt16
+          idx = this.reader.readUInt16LE().value;
+          break;
+        case 2: // UInt32
+          idx = this.reader.readUInt32LE().value;
+          break;
+        case 3: // UInt64
+          idx = Number(this.reader.readUInt64LE().value);
+          break;
+        default:
+          throw new Error(`Unknown LowCardinality index type: ${indexType}`);
+      }
+      indexes.push(idx);
+    }
+
+    // Handle Nullable inner type - index 0 is the null placeholder
+    const isNullable = innerType.kind === 'Nullable';
+
+    // Build result values from indexes
+    // Note: The dictionary includes a placeholder at index 0 (empty/default value for nullable)
+    // Actual data values start at index 1, so we use direct dictionary lookup
+    const values: AstNode[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const idx = indexes[i];
+
+      if (isNullable && idx === 0) {
+        // NULL value (index 0 is the null placeholder in dictionary)
+        values.push({
+          id: this.generateId(),
+          type: typeStr,
+          byteRange: { start: startOffset, end: this.reader.offset },
+          value: null,
+          displayValue: 'NULL',
+          label: `[${i}]`,
+        });
+      } else {
+        // Non-null value - direct dictionary lookup (index maps directly to dictionary position)
+        const dictEntry = dictionary[idx];
+
+        if (dictEntry) {
+          values.push({
+            id: this.generateId(),
+            type: typeStr,
+            byteRange: { start: startOffset, end: this.reader.offset },
+            value: dictEntry.value,
+            displayValue: dictEntry.displayValue,
+            label: `[${i}]`,
+            metadata: { dictionaryIndex: idx },
+          });
+        } else {
+          values.push({
+            id: this.generateId(),
+            type: typeStr,
+            byteRange: { start: startOffset, end: this.reader.offset },
+            value: `<unknown:${idx}>`,
+            displayValue: `<unknown:${idx}>`,
+            label: `[${i}]`,
+          });
+        }
+      }
+    }
+
+    return values;
+  }
+
+  /**
+   * Variant in Native format:
+   * 1. Discriminators prefix: mode (UInt64)
+   * 2. Discriminators: N bytes (0xFF = NULL)
+   * 3. Variant elements: sparse columns for each variant type
+   */
+  private decodeVariantColumn(variants: ClickHouseType[], rowCount: number): AstNode[] {
+    const typeStr = `Variant(${variants.map(typeToString).join(', ')})`;
+    const startOffset = this.reader.offset;
+
+    // Read mode (0 = BASIC)
+    const { value: _mode } = this.reader.readUInt64LE();
+
+    // Read discriminators
+    const discriminators: number[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const { value } = this.reader.readUInt8();
+      discriminators.push(value);
+    }
+
+    // Count values per variant type
+    const countPerVariant: number[] = new Array(variants.length).fill(0);
+    for (const disc of discriminators) {
+      if (disc !== 0xFF && disc < variants.length) {
+        countPerVariant[disc]++;
+      }
+    }
+
+    // Read sparse data for each variant
+    const variantData: AstNode[][] = [];
+    for (let v = 0; v < variants.length; v++) {
+      const count = countPerVariant[v];
+      if (count > 0) {
+        variantData[v] = this.decodeColumnData(variants[v], count);
+      } else {
+        variantData[v] = [];
+      }
+    }
+
+    // Track current position in each variant's data
+    const variantPositions: number[] = new Array(variants.length).fill(0);
+
+    // Build result values
+    const values: AstNode[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const disc = discriminators[i];
+
+      if (disc === 0xFF) {
+        // NULL
+        values.push({
+          id: this.generateId(),
+          type: typeStr,
+          byteRange: { start: startOffset, end: this.reader.offset },
+          value: null,
+          displayValue: 'NULL',
+          label: `[${i}]`,
+          metadata: { discriminator: disc },
+        });
+      } else if (disc < variants.length) {
+        const variantNode = variantData[disc][variantPositions[disc]++];
+        values.push({
+          id: this.generateId(),
+          type: typeToString(variants[disc]),
+          byteRange: variantNode.byteRange,
+          value: variantNode.value,
+          displayValue: variantNode.displayValue,
+          label: `[${i}]`,
+          children: variantNode.children,
+          metadata: { discriminator: disc, variantType: typeToString(variants[disc]) },
+        });
+      } else {
+        values.push({
+          id: this.generateId(),
+          type: typeStr,
+          byteRange: { start: startOffset, end: this.reader.offset },
+          value: `<unknown discriminator: ${disc}>`,
+          displayValue: `<unknown discriminator: ${disc}>`,
+          label: `[${i}]`,
+        });
+      }
+    }
+
+    return values;
+  }
+
+  /**
+   * Dynamic in Native format:
+   * 1. DynamicStructure stream: version + type list
+   * 2. DynamicData stream: internal Variant data (with extra SharedVariant)
+   *
+   * The internal Variant has numTypes + 1 variants:
+   * - Index 0 to numTypes-1: declared types
+   * - Index numTypes: SharedVariant (binary-encoded values of other types)
+   * - Index 0xFF: NULL
+   */
+  private decodeDynamicColumn(rowCount: number): AstNode[] {
+    const startOffset = this.reader.offset;
+
+    // Read version
+    const { value: _version } = this.reader.readUInt64LE();
+
+    // Read max_dynamic_types (historical, now equals num_dynamic_types) - V1 only
+    const { value: _maxTypes } = decodeLEB128(this.reader);
+
+    // Read num_dynamic_types
+    const { value: numTypes } = decodeLEB128(this.reader);
+
+    // Read type names
+    const typeNames: string[] = [];
+    for (let i = 0; i < numTypes; i++) {
+      const { value: len } = decodeLEB128(this.reader);
+      const { value: bytes } = this.reader.readBytes(len);
+      typeNames.push(new TextDecoder().decode(bytes));
+    }
+
+    // Parse types
+    const variants = typeNames.map(name => parseType(name));
+
+    // Handle empty types case (all NULLs or all in SharedVariant)
+    // Read Variant discriminators prefix (mode)
+    const { value: _mode } = this.reader.readUInt64LE();
+
+    // Read discriminators
+    const discriminators: number[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const { value } = this.reader.readUInt8();
+      discriminators.push(value);
+    }
+
+    // Count values per variant type (including SharedVariant at index numTypes)
+    const countPerVariant: number[] = new Array(numTypes + 1).fill(0);
+    for (const disc of discriminators) {
+      if (disc !== 0xFF && disc <= numTypes) {
+        countPerVariant[disc]++;
+      }
+    }
+
+    // Read sparse data for declared types
+    const variantData: AstNode[][] = [];
+    for (let v = 0; v < numTypes; v++) {
+      const count = countPerVariant[v];
+      if (count > 0) {
+        variantData[v] = this.decodeColumnData(variants[v], count);
+      } else {
+        variantData[v] = [];
+      }
+    }
+
+    // Read SharedVariant data (index = numTypes)
+    const sharedVariantCount = countPerVariant[numTypes];
+    const sharedVariantData: AstNode[] = [];
+    if (sharedVariantCount > 0) {
+      // SharedVariant stores binary-encoded type + value for each entry
+      for (let i = 0; i < sharedVariantCount; i++) {
+        const valueStart = this.reader.offset;
+        // Read binary type index
+        const { value: typeIdx } = decodeLEB128(this.reader);
+        // Read the value based on the binary type
+        const innerType = this.decodeDynamicBinaryType(typeIdx);
+        const innerValue = this.decodeValue(innerType);
+
+        sharedVariantData.push({
+          id: this.generateId(),
+          type: typeToString(innerType),
+          byteRange: { start: valueStart, end: this.reader.offset },
+          value: innerValue.value,
+          displayValue: innerValue.displayValue,
+          children: innerValue.children,
+          metadata: { binaryTypeIndex: typeIdx },
+        });
+      }
+    }
+    variantData[numTypes] = sharedVariantData;
+
+    // Track current position in each variant's data
+    const variantPositions: number[] = new Array(numTypes + 1).fill(0);
+
+    // Build result values
+    const values: AstNode[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const disc = discriminators[i];
+
+      if (disc === 0xFF) {
+        // NULL
+        values.push({
+          id: this.generateId(),
+          type: 'Dynamic',
+          byteRange: { start: startOffset, end: this.reader.offset },
+          value: null,
+          displayValue: 'NULL',
+          label: `[${i}]`,
+          metadata: { discriminator: disc },
+        });
+      } else if (disc <= numTypes) {
+        const variantNode = variantData[disc][variantPositions[disc]++];
+        values.push({
+          id: this.generateId(),
+          type: 'Dynamic',
+          byteRange: variantNode.byteRange,
+          value: variantNode.value,
+          displayValue: variantNode.displayValue,
+          label: `[${i}]`,
+          children: variantNode.children,
+          metadata: { discriminator: disc, actualType: variantNode.type },
+        });
+      } else {
+        values.push({
+          id: this.generateId(),
+          type: 'Dynamic',
+          byteRange: { start: startOffset, end: this.reader.offset },
+          value: `<unknown discriminator: ${disc}>`,
+          displayValue: `<unknown discriminator: ${disc}>`,
+          label: `[${i}]`,
+        });
+      }
+    }
+
+    return values;
+  }
+
+  /**
+   * Decode binary type index used in Dynamic's SharedVariant
+   */
+  private decodeDynamicBinaryType(typeIdx: number): ClickHouseType {
+    // Common binary type indexes
+    const typeMap: Record<number, ClickHouseType> = {
+      0: { kind: 'Nothing' } as any,
+      1: { kind: 'UInt8' },
+      2: { kind: 'UInt16' },
+      3: { kind: 'UInt32' },
+      4: { kind: 'UInt64' },
+      5: { kind: 'UInt128' },
+      6: { kind: 'UInt256' },
+      7: { kind: 'Int8' },
+      8: { kind: 'Int16' },
+      9: { kind: 'Int32' },
+      10: { kind: 'Int64' },
+      11: { kind: 'Int128' },
+      12: { kind: 'Int256' },
+      13: { kind: 'Float32' },
+      14: { kind: 'Float64' },
+      15: { kind: 'Date' },
+      16: { kind: 'Date32' },
+      17: { kind: 'DateTime' },
+      // 18: DateTime64 with precision
+      19: { kind: 'String' },
+      20: { kind: 'UUID' },
+      21: { kind: 'IPv4' },
+      22: { kind: 'IPv6' },
+      23: { kind: 'Bool' },
+    };
+
+    const type = typeMap[typeIdx];
+    if (type) {
+      return type;
+    }
+
+    // For unknown types, return String as fallback
+    return { kind: 'String' };
+  }
+
+  /**
+   * JSON in Native format (complex - simplified implementation)
+   */
+  private decodeJSONColumn(_type: ClickHouseType, rowCount: number): AstNode[] {
+    // JSON is complex - for now, return placeholder
+    const values: AstNode[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      values.push({
+        id: this.generateId(),
+        type: 'JSON',
+        byteRange: { start: this.reader.offset, end: this.reader.offset },
+        value: {},
+        displayValue: '{}',
+        label: `[${i}]`,
+        metadata: { note: 'JSON decoding not fully implemented' },
+      });
+    }
+    return values;
+  }
+
   // Point decoder (same as RowBinary)
   private decodePoint(): AstNode {
     const startOffset = this.reader.offset;
@@ -757,5 +1455,370 @@ export class NativeDecoder extends FormatDecoder {
       displayValue: `(${x.displayValue}, ${y.displayValue})`,
       children: [x, y],
     };
+  }
+
+  // =========================================
+  // Geo type column decoders
+  // =========================================
+
+  /**
+   * Ring = Array(Point) in columnar format
+   */
+  private decodeRingColumn(rowCount: number): AstNode[] {
+    // Read cumulative offsets
+    const offsets: bigint[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const { value } = this.reader.readUInt64LE();
+      offsets.push(value);
+    }
+
+    // Calculate sizes
+    const totalPoints = rowCount > 0 ? Number(offsets[rowCount - 1]) : 0;
+    const sizes: number[] = [];
+    let prevOffset = 0n;
+    for (let i = 0; i < rowCount; i++) {
+      sizes.push(Number(offsets[i] - prevOffset));
+      prevOffset = offsets[i];
+    }
+
+    // Read all points (columnar - all X's first, then all Y's)
+    const allX: AstNode[] = [];
+    for (let i = 0; i < totalPoints; i++) {
+      allX.push(this.decodeFloat64());
+    }
+    const allY: AstNode[] = [];
+    for (let i = 0; i < totalPoints; i++) {
+      allY.push(this.decodeFloat64());
+    }
+
+    // Assemble points
+    const allPoints: AstNode[] = [];
+    for (let i = 0; i < totalPoints; i++) {
+      allX[i].label = 'x';
+      allY[i].label = 'y';
+      allPoints.push({
+        id: this.generateId(),
+        type: 'Point',
+        byteRange: { start: allX[i].byteRange.start, end: allY[i].byteRange.end },
+        value: [allX[i].value, allY[i].value],
+        displayValue: `(${allX[i].displayValue}, ${allY[i].displayValue})`,
+        children: [allX[i], allY[i]],
+      });
+    }
+
+    // Distribute to rings
+    const values: AstNode[] = [];
+    let pointIndex = 0;
+    for (let i = 0; i < rowCount; i++) {
+      const size = sizes[i];
+      const ringPoints = allPoints.slice(pointIndex, pointIndex + size);
+      pointIndex += size;
+
+      ringPoints.forEach((p, j) => {
+        p.label = `[${j}]`;
+      });
+
+      values.push({
+        id: this.generateId(),
+        type: 'Ring',
+        byteRange: { start: ringPoints[0]?.byteRange.start ?? this.reader.offset, end: this.reader.offset },
+        value: ringPoints.map(p => p.value),
+        displayValue: `[${ringPoints.map(p => p.displayValue).join(', ')}]`,
+        label: `[${i}]`,
+        children: ringPoints,
+        metadata: { size },
+      });
+    }
+
+    return values;
+  }
+
+  /**
+   * Polygon = Array(Ring) in columnar format
+   */
+  private decodePolygonColumn(rowCount: number): AstNode[] {
+    // First: Array of Ring offsets
+    const ringOffsets: bigint[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const { value } = this.reader.readUInt64LE();
+      ringOffsets.push(value);
+    }
+
+    const totalRings = rowCount > 0 ? Number(ringOffsets[rowCount - 1]) : 0;
+    const ringSizes: number[] = [];
+    let prevOffset = 0n;
+    for (let i = 0; i < rowCount; i++) {
+      ringSizes.push(Number(ringOffsets[i] - prevOffset));
+      prevOffset = ringOffsets[i];
+    }
+
+    // Decode all rings
+    const allRings = this.decodeRingColumn(totalRings);
+
+    // Distribute to polygons
+    const values: AstNode[] = [];
+    let ringIndex = 0;
+    for (let i = 0; i < rowCount; i++) {
+      const size = ringSizes[i];
+      const polygonRings = allRings.slice(ringIndex, ringIndex + size);
+      ringIndex += size;
+
+      polygonRings.forEach((r, j) => {
+        r.label = `[${j}]`;
+      });
+
+      values.push({
+        id: this.generateId(),
+        type: 'Polygon',
+        byteRange: { start: polygonRings[0]?.byteRange.start ?? this.reader.offset, end: this.reader.offset },
+        value: polygonRings.map(r => r.value),
+        displayValue: `[${polygonRings.map(r => r.displayValue).join(', ')}]`,
+        label: `[${i}]`,
+        children: polygonRings,
+        metadata: { size },
+      });
+    }
+
+    return values;
+  }
+
+  /**
+   * MultiPolygon = Array(Polygon) in columnar format
+   */
+  private decodeMultiPolygonColumn(rowCount: number): AstNode[] {
+    // First: Array of Polygon offsets
+    const polyOffsets: bigint[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const { value } = this.reader.readUInt64LE();
+      polyOffsets.push(value);
+    }
+
+    const totalPolygons = rowCount > 0 ? Number(polyOffsets[rowCount - 1]) : 0;
+    const polySizes: number[] = [];
+    let prevOffset = 0n;
+    for (let i = 0; i < rowCount; i++) {
+      polySizes.push(Number(polyOffsets[i] - prevOffset));
+      prevOffset = polyOffsets[i];
+    }
+
+    // Decode all polygons
+    const allPolygons = this.decodePolygonColumn(totalPolygons);
+
+    // Distribute to multipolygons
+    const values: AstNode[] = [];
+    let polyIndex = 0;
+    for (let i = 0; i < rowCount; i++) {
+      const size = polySizes[i];
+      const multiPolyPolygons = allPolygons.slice(polyIndex, polyIndex + size);
+      polyIndex += size;
+
+      multiPolyPolygons.forEach((p, j) => {
+        p.label = `[${j}]`;
+      });
+
+      values.push({
+        id: this.generateId(),
+        type: 'MultiPolygon',
+        byteRange: { start: multiPolyPolygons[0]?.byteRange.start ?? this.reader.offset, end: this.reader.offset },
+        value: multiPolyPolygons.map(p => p.value),
+        displayValue: `[${multiPolyPolygons.map(p => p.displayValue).join(', ')}]`,
+        label: `[${i}]`,
+        children: multiPolyPolygons,
+        metadata: { size },
+      });
+    }
+
+    return values;
+  }
+
+  /**
+   * LineString = Array(Point) in columnar format (same as Ring)
+   */
+  private decodeLineStringColumn(rowCount: number): AstNode[] {
+    const rings = this.decodeRingColumn(rowCount);
+    // Change type from Ring to LineString
+    for (const r of rings) {
+      r.type = 'LineString';
+    }
+    return rings;
+  }
+
+  /**
+   * MultiLineString = Array(LineString) in columnar format
+   */
+  private decodeMultiLineStringColumn(rowCount: number): AstNode[] {
+    // First: Array of LineString offsets
+    const lineOffsets: bigint[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const { value } = this.reader.readUInt64LE();
+      lineOffsets.push(value);
+    }
+
+    const totalLines = rowCount > 0 ? Number(lineOffsets[rowCount - 1]) : 0;
+    const lineSizes: number[] = [];
+    let prevOffset = 0n;
+    for (let i = 0; i < rowCount; i++) {
+      lineSizes.push(Number(lineOffsets[i] - prevOffset));
+      prevOffset = lineOffsets[i];
+    }
+
+    // Decode all linestrings
+    const allLines = this.decodeLineStringColumn(totalLines);
+
+    // Distribute to multilinestrings
+    const values: AstNode[] = [];
+    let lineIndex = 0;
+    for (let i = 0; i < rowCount; i++) {
+      const size = lineSizes[i];
+      const multiLineLines = allLines.slice(lineIndex, lineIndex + size);
+      lineIndex += size;
+
+      multiLineLines.forEach((l, j) => {
+        l.label = `[${j}]`;
+      });
+
+      values.push({
+        id: this.generateId(),
+        type: 'MultiLineString',
+        byteRange: { start: multiLineLines[0]?.byteRange.start ?? this.reader.offset, end: this.reader.offset },
+        value: multiLineLines.map(l => l.value),
+        displayValue: `[${multiLineLines.map(l => l.displayValue).join(', ')}]`,
+        label: `[${i}]`,
+        children: multiLineLines,
+        metadata: { size },
+      });
+    }
+
+    return values;
+  }
+
+  /**
+   * Geometry is a Variant of geo types:
+   * ClickHouse sorts variant types alphabetically:
+   * 0=LineString, 1=MultiLineString, 2=MultiPolygon, 3=Point, 4=Polygon, 5=Ring
+   */
+  private decodeGeometryColumn(rowCount: number): AstNode[] {
+    // Geometry is internally a Variant type with alphabetically sorted geo types
+    const geoVariants: ClickHouseType[] = [
+      { kind: 'LineString' },      // 0
+      { kind: 'MultiLineString' }, // 1
+      { kind: 'MultiPolygon' },    // 2
+      { kind: 'Point' },           // 3
+      { kind: 'Polygon' },         // 4
+      { kind: 'Ring' },            // 5
+    ];
+
+    // Decode as Variant
+    const variantValues = this.decodeVariantColumn(geoVariants, rowCount);
+
+    // Update type to Geometry
+    for (const v of variantValues) {
+      const originalType = v.type;
+      v.metadata = { ...v.metadata, geometryType: originalType };
+    }
+
+    return variantValues;
+  }
+
+  /**
+   * QBit columnar decoder - bit-transposed vector format
+   *
+   * In Native format, QBit uses bit-transposed encoding:
+   * - Data is organized as: for each bit plane (MSB to LSB), for each row, 1 byte
+   * - Each byte contains packed bits from all vector elements
+   * - Element 0 → bit 0, element 1 → bit 1, etc.
+   *
+   * For Float32: 32 bit planes, so 32 bytes per row
+   * For Float64: 64 bit planes, so 64 bytes per row
+   * For BFloat16: 16 bit planes, so 16 bytes per row
+   */
+  private decodeQBitColumn(elementType: ClickHouseType, dimension: number, rowCount: number): AstNode[] {
+    const startOffset = this.reader.offset;
+
+    // Determine bits per element based on type
+    const bitsPerElement = elementType.kind === 'Float64' ? 64 : elementType.kind === 'BFloat16' ? 16 : 32;
+    const totalBytes = bitsPerElement * rowCount;
+
+    // Read all bit-transposed data
+    const { value: data } = this.reader.readBytes(totalBytes);
+
+    // Decode each row
+    const values: AstNode[] = [];
+    for (let row = 0; row < rowCount; row++) {
+      const children: AstNode[] = [];
+
+      for (let elem = 0; elem < dimension; elem++) {
+        // Reconstruct the float value for this element
+        let bits = 0n;
+
+        for (let bitPlane = 0; bitPlane < bitsPerElement; bitPlane++) {
+          // Data is organized as: [bp31_row0, bp31_row1, ..., bp30_row0, bp30_row1, ...]
+          const byteIndex = bitPlane * rowCount + row;
+          const byte = data[byteIndex];
+
+          // Extract this element's bit from the byte
+          const bit = (byte >> elem) & 1;
+
+          // Place it in the correct position (MSB first)
+          const bitPosition = bitsPerElement - 1 - bitPlane;
+          if (bit) {
+            bits |= 1n << BigInt(bitPosition);
+          }
+        }
+
+        // Convert bits to float
+        const floatValue = this.bitsToFloat(bits, elementType.kind as 'Float32' | 'Float64' | 'BFloat16');
+
+        children.push({
+          id: this.generateId(),
+          type: typeToString(elementType),
+          byteRange: { start: startOffset, end: this.reader.offset },
+          value: floatValue,
+          displayValue: floatValue.toString(),
+          label: `[${elem}]`,
+        });
+      }
+
+      const typeStr = `QBit(${typeToString(elementType)}, ${dimension})`;
+      values.push({
+        id: this.generateId(),
+        type: typeStr,
+        byteRange: { start: startOffset, end: this.reader.offset },
+        value: children.map(c => c.value),
+        displayValue: `[${children.map(c => c.displayValue).join(', ')}]`,
+        label: `[${row}]`,
+        children,
+        metadata: { dimension, elementType: typeToString(elementType) },
+      });
+    }
+
+    return values;
+  }
+
+  /**
+   * Convert bit pattern to float value
+   */
+  private bitsToFloat(bits: bigint, type: 'Float32' | 'Float64' | 'BFloat16'): number {
+    const buffer = new ArrayBuffer(8);
+    const view = new DataView(buffer);
+
+    if (type === 'Float32') {
+      view.setUint32(0, Number(bits), true);
+      return view.getFloat32(0, true);
+    } else if (type === 'Float64') {
+      view.setBigUint64(0, bits, true);
+      return view.getFloat64(0, true);
+    } else {
+      // BFloat16: 16-bit format, convert to Float32 by left-shifting
+      const float32Bits = Number(bits) << 16;
+      view.setUint32(0, float32Bits, false);
+      return view.getFloat32(0, false);
+    }
+  }
+
+  // Single QBit value decoder (for nested contexts - delegates to column decoder)
+  private decodeQBit(elementType: ClickHouseType, dimension: number): AstNode {
+    const values = this.decodeQBitColumn(elementType, dimension, 1);
+    return values[0];
   }
 }

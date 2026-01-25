@@ -8,8 +8,7 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1 className="app-title">RowBinary Visualizer</h1>
-        <span className="app-subtitle">Interactive ClickHouse binary format explorer</span>
+        <h1 className="app-title">ClickHouse Format Explorer</h1>
       </header>
 
       <div className="app-query">

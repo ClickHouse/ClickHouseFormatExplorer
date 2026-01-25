@@ -58,24 +58,26 @@ export class BinaryReader {
   }
 
   // For 128-bit unsigned integers
+  // Read as two 64-bit unsigned halves and combine
   readUInt128LE(): { value: bigint; range: ByteRange } {
     const start = this.pos;
-    let value = 0n;
-    for (let i = 0; i < 16; i++) {
-      value |= BigInt(this.bytes[this.pos + i]) << BigInt(i * 8);
-    }
+    const low = this.data.getBigUint64(this.pos, true);
+    const high = this.data.getBigUint64(this.pos + 8, true);
     this.pos += 16;
+    const value = low + (high << 64n);
     return { value, range: this.makeRange(start) };
   }
 
   // For 256-bit unsigned integers
+  // Read as four 64-bit unsigned halves and combine
   readUInt256LE(): { value: bigint; range: ByteRange } {
     const start = this.pos;
-    let value = 0n;
-    for (let i = 0; i < 32; i++) {
-      value |= BigInt(this.bytes[this.pos + i]) << BigInt(i * 8);
-    }
+    const p0 = this.data.getBigUint64(this.pos, true);
+    const p1 = this.data.getBigUint64(this.pos + 8, true);
+    const p2 = this.data.getBigUint64(this.pos + 16, true);
+    const p3 = this.data.getBigUint64(this.pos + 24, true);
     this.pos += 32;
+    const value = p0 + (p1 << 64n) + (p2 << 128n) + (p3 << 192n);
     return { value, range: this.makeRange(start) };
   }
 

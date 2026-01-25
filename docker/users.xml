@@ -14,6 +14,13 @@
     <profiles>
         <readonly>
             <readonly>1</readonly>
+            <!-- Enable experimental types for format exploration -->
+            <allow_experimental_variant_type>1</allow_experimental_variant_type>
+            <allow_experimental_dynamic_type>1</allow_experimental_dynamic_type>
+            <allow_experimental_json_type>1</allow_experimental_json_type>
+            <allow_suspicious_variant_types>1</allow_suspicious_variant_types>
+            <allow_experimental_qbit_type>1</allow_experimental_qbit_type>
+            <allow_suspicious_low_cardinality_types>1</allow_suspicious_low_cardinality_types>
         </readonly>
     </profiles>
 </clickhouse>

@@ -18,7 +18,7 @@
 .app-title {
   font-size: 18px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--accent-color);
   margin: 0;
 }
 
@@ -120,6 +120,7 @@
 
 .query-format-select:hover:not(:disabled) {
   border-color: var(--accent-color);
+  background: var(--accent-color-bg);
 }
 
 .query-format-select:disabled {
@@ -139,11 +140,13 @@
 .query-btn.primary {
   background: var(--accent-color);
   border: 1px solid var(--accent-color);
-  color: #fff;
+  color: #000;
+  font-weight: 600;
 }
 
 .query-btn.primary:hover:not(:disabled) {
-  background: #0098ff;
+  background: #e8eb60;
+  border-color: #e8eb60;
 }
 
 .query-btn.primary:disabled {
@@ -158,7 +161,8 @@
 }
 
 .query-btn.secondary:hover:not(:disabled) {
-  background: var(--border-color);
+  background: var(--accent-color-bg);
+  border-color: var(--accent-color);
   color: var(--text-primary);
 }
 

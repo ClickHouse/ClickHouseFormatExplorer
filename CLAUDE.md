@@ -58,6 +58,11 @@ docker/
 └── supervisord.conf      # Runs nginx + ClickHouse together
 ```
 
+## Wire Format Docs
+
+ * RowBinary: rowbinaryspec.md
+ * Native: nativespec.md
+
 ## Key Concepts
 
 ### AstNode

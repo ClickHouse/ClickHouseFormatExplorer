@@ -34,7 +34,8 @@
 }
 
 .ast-header-btn:hover {
-  background: var(--border-color);
+  background: var(--accent-color-bg);
+  border-color: var(--accent-color);
   color: var(--text-primary);
 }
 
@@ -58,6 +59,7 @@
 
 .ast-row-label {
   font-weight: 500;
+  color: var(--accent-color);
 }
 
 .ast-row-bytes {
@@ -76,16 +78,16 @@
 }
 
 .ast-node:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--accent-color-bg);
 }
 
 .ast-node.active {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(250, 255, 105, 0.2);
   border-left-color: var(--node-color, var(--accent-color));
 }
 
 .ast-node.hovered {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(250, 255, 105, 0.12);
   border-left-color: var(--node-color, var(--accent-color));
 }
 
@@ -188,7 +190,7 @@
 
 .ast-block-label {
   font-weight: 500;
-  color: var(--type-array);
+  color: var(--accent-color);
 }
 
 .ast-block-info {
@@ -223,17 +225,17 @@
 }
 
 .ast-column-header:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--accent-color-bg);
   color: var(--text-primary);
 }
 
 .ast-column-header.active {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(250, 255, 105, 0.2);
   border-left-color: var(--node-color, var(--accent-color));
 }
 
 .ast-column-header.hovered {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(250, 255, 105, 0.12);
   border-left-color: var(--node-color, var(--accent-color));
 }
 
@@ -285,18 +287,18 @@
 }
 
 .ast-metadata-header:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--accent-color-bg);
   color: var(--text-secondary);
 }
 
 .ast-metadata-header.active {
-  background: rgba(255, 255, 255, 0.1);
-  border-left-color: var(--type-special);
+  background: rgba(250, 255, 105, 0.2);
+  border-left-color: var(--accent-color);
 }
 
 .ast-metadata-header.hovered {
-  background: rgba(255, 255, 255, 0.08);
-  border-left-color: var(--type-special);
+  background: rgba(250, 255, 105, 0.12);
+  border-left-color: var(--accent-color);
 }
 
 .ast-metadata-item {
@@ -313,17 +315,17 @@
 }
 
 .ast-metadata-item:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--accent-color-bg);
 }
 
 .ast-metadata-item.active {
-  background: rgba(255, 255, 255, 0.1);
-  border-left-color: var(--type-special);
+  background: rgba(250, 255, 105, 0.2);
+  border-left-color: var(--accent-color);
 }
 
 .ast-metadata-item.hovered {
-  background: rgba(255, 255, 255, 0.08);
-  border-left-color: var(--type-special);
+  background: rgba(250, 255, 105, 0.12);
+  border-left-color: var(--accent-color);
 }
 
 .ast-metadata-badge {

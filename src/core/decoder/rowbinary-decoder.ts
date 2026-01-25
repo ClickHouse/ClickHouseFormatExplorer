@@ -1375,12 +1375,15 @@ export class RowBinaryDecoder extends FormatDecoder {
   }
 
   // QBit type decoder - stores quantized bit vectors
+  // In RowBinary format, QBit is serialized like Array: VarUInt size + sequential elements
   private decodeQBit(elementType: ClickHouseType, dimension: number): AstNode {
     const startOffset = this.reader.offset;
-    const children: AstNode[] = [];
 
-    // QBit stores 'dimension' number of elements of the specified type
-    for (let i = 0; i < dimension; i++) {
+    // Read size (should match dimension)
+    const { value: size } = decodeLEB128(this.reader);
+
+    const children: AstNode[] = [];
+    for (let i = 0; i < size; i++) {
       const child = this.decodeValue(elementType);
       child.label = `[${i}]`;
       children.push(child);
@@ -1391,9 +1394,9 @@ export class RowBinaryDecoder extends FormatDecoder {
       type: `QBit(${typeToString(elementType)}, ${dimension})`,
       byteRange: { start: startOffset, end: this.reader.offset },
       value: children.map((c) => c.value),
-      displayValue: `[${dimension} elements]`,
+      displayValue: `[${children.map(c => c.displayValue).join(', ')}]`,
       children,
-      metadata: { dimension, elementType: typeToString(elementType) },
+      metadata: { dimension, elementType: typeToString(elementType), size },
     };
   }
 }

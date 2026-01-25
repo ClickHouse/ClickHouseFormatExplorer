@@ -2842,20 +2842,29 @@ Where:
 
 #### Wire Format
 
-Over the wire (in the Native format), `QBit` is serialized as an `Array` of the element type. The bit-transpose optimization is an internal storage optimization that happens server-side only and is not visible in the protocol.
+**Important:** The wire format differs significantly between Native and RowBinary formats.
 
-**Binary Serialization:**
+##### RowBinary Format
+
+In RowBinary format, `QBit` is serialized exactly like an `Array` of the element type:
+
 1. **Size** (VarUInt): Number of elements in the vector (must match the declared dimension)
 2. **Elements**: Sequential float values in little-endian format
 
-**Example: QBit(Float32, 3) with values [1.0, 2.0, 3.0]**
+**Example: QBit(Float32, 3) with values [1.0, 2.0, 3.0] in RowBinaryWithNamesAndTypes**
 
 ```bash
-curl -s -XPOST "http://localhost:8123?default_format=Native" \
-  --data-binary "SELECT [1.0, 2.0, 3.0]::Array(Float32) AS vec" | xxd
+curl -s "http://localhost:8123/?allow_experimental_qbit_type=1" \
+  --data-binary "SELECT [1.0, 2.0, 3.0]::QBit(Float32, 3) AS vec FORMAT RowBinaryWithNamesAndTypes" | xxd
 ```
 
-The vector is serialized exactly like an `Array(Float32)`:
+```
+00000000: 0103 7665 6310 5142 6974 2846 6c6f 6174  ..vec.QBit(Float
+00000010: 3332 2c20 3329 0300 0080 3f00 0000 4000  32, 3)....?...@.
+00000020: 0040 40                                  .@@
+```
+
+The data portion (after type metadata) is:
 ```
 0x03                    # Size = 3 (VarUInt)
 0x00 0x00 0x80 0x3F     # 1.0 as little-endian Float32
@@ -2863,14 +2872,28 @@ The vector is serialized exactly like an `Array(Float32)`:
 0x00 0x00 0x40 0x40     # 3.0 as little-endian Float32
 ```
 
-#### Internal Storage (Bit-Transpose Format)
+##### Native Format (Bit-Transposed)
 
-While not visible in the wire format, internally `QBit` stores data in a bit-transposed format across multiple `FixedString` columns organized as a `Tuple`. This optimization enables faster vector similarity search operations.
+In Native format, `QBit` uses a **bit-transposed encoding** that is NOT the same as Array. This format organizes data across multiple `FixedString` columns as a `Tuple` for SIMD-optimized distance calculations.
+
+**Example: QBit(Float32, 3) in Native format**
+
+```bash
+curl -s "http://localhost:8123/?allow_experimental_qbit_type=1" \
+  --data-binary "SELECT [1.0, 2.0, 3.0]::QBit(Float32, 3) AS vec FORMAT Native" | xxd
+```
+
+```
+00000000: 0101 0376 6563 1051 4269 7428 466c 6f61  ...vec.QBit(Floa
+00000010: 7433 322c 2033 2900 0601 0101 0101 0101  t32, 3).........
+00000020: 0400 0000 0000 0000 0000 0000 0000 0000  ................
+00000030: 0000 0000 0000 00                        .......
+```
 
 The bit transposition maps:
 - Bit j of element i → Bit i of bit-plane j
 
-This layout is optimized for SIMD operations during distance calculations but is transparent to clients consuming the Native format.
+This internal format is significantly more complex than simple array serialization and is designed for optimal SIMD performance during vector similarity computations.
 
 #### Type Encoding
 

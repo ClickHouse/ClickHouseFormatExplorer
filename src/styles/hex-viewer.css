@@ -48,7 +48,7 @@
 }
 
 .hex-byte:hover {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--accent-color-bg);
 }
 
 .hex-byte.highlighted {
@@ -56,7 +56,7 @@
 }
 
 .hex-byte.active {
-  outline: 2px solid #ffff00;
+  outline: 2px solid var(--accent-color);
   outline-offset: -1px;
 }
 
@@ -91,7 +91,7 @@
 }
 
 .hex-ascii-char.active {
-  outline: 1px solid #ffff00;
+  outline: 1px solid var(--accent-color);
 }
 
 /* Empty state */
