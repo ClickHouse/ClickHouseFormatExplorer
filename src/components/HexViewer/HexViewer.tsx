@@ -43,8 +43,176 @@ function buildHighlightMap(
     node.children?.forEach((child) => visitNode(child, depth + 1));
   }
 
-  parsedData.rows.forEach((row) => {
+  parsedData.rows?.forEach((row) => {
     row.values.forEach((node) => visitNode(node, 0));
+  });
+
+  // Handle RowBinary header
+  if (parsedData.rows) {
+    const metadataColor = '#ce93d8'; // Purple for metadata
+    const header = parsedData.header;
+
+    // Full header
+    const headerId = 'rowbinary-header';
+    if (activeNodeId === headerId || hoveredNodeId === headerId) {
+      const isActive = activeNodeId === headerId;
+      for (let i = header.byteRange.start; i < header.byteRange.end; i++) {
+        const existing = map.get(i);
+        if (!existing || isActive || !existing.isActive) {
+          map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+        }
+      }
+    }
+
+    // Column count
+    const columnCountId = 'rowbinary-header-colcount';
+    if (activeNodeId === columnCountId || hoveredNodeId === columnCountId) {
+      const isActive = activeNodeId === columnCountId;
+      for (let i = header.columnCountRange.start; i < header.columnCountRange.end; i++) {
+        const existing = map.get(i);
+        if (!existing || isActive || !existing.isActive) {
+          map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+        }
+      }
+    }
+
+    // Column definitions
+    header.columns.forEach((col, colIndex) => {
+      const colDefId = `rowbinary-header-col-${colIndex}`;
+      const colNameId = `rowbinary-header-col-${colIndex}-name`;
+      const colTypeId = `rowbinary-header-col-${colIndex}-type`;
+
+      // Full column definition (name + type)
+      if (activeNodeId === colDefId || hoveredNodeId === colDefId) {
+        const isActive = activeNodeId === colDefId;
+        for (let i = col.nameByteRange.start; i < col.typeByteRange.end; i++) {
+          const existing = map.get(i);
+          if (!existing || isActive || !existing.isActive) {
+            map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+          }
+        }
+      }
+
+      // Column name only
+      if (activeNodeId === colNameId || hoveredNodeId === colNameId) {
+        const isActive = activeNodeId === colNameId;
+        for (let i = col.nameByteRange.start; i < col.nameByteRange.end; i++) {
+          const existing = map.get(i);
+          if (!existing || isActive || !existing.isActive) {
+            map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+          }
+        }
+      }
+
+      // Column type only
+      if (activeNodeId === colTypeId || hoveredNodeId === colTypeId) {
+        const isActive = activeNodeId === colTypeId;
+        for (let i = col.typeByteRange.start; i < col.typeByteRange.end; i++) {
+          const existing = map.get(i);
+          if (!existing || isActive || !existing.isActive) {
+            map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+          }
+        }
+      }
+    });
+  }
+
+  // Handle blocks for Native format
+  parsedData.blocks?.forEach((block, blockIndex) => {
+    const metadataColor = '#ce93d8'; // Purple for metadata
+
+    // Check for block header metadata section (the parent "Header" item)
+    const blockHeaderId = `block-${blockIndex}-header`;
+    if (activeNodeId === blockHeaderId || hoveredNodeId === blockHeaderId) {
+      const isActive = activeNodeId === blockHeaderId;
+      // Highlight entire header range (numColumns + numRows)
+      for (let i = block.header.numColumnsRange.start; i < block.header.numRowsRange.end; i++) {
+        const existing = map.get(i);
+        if (!existing || isActive || !existing.isActive) {
+          map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+        }
+      }
+    }
+
+    // Check for individual block header items (numColumns, numRows)
+    const numColsId = `block-${blockIndex}-numcols`;
+    const numRowsId = `block-${blockIndex}-numrows`;
+
+    if (activeNodeId === numColsId || hoveredNodeId === numColsId) {
+      const isActive = activeNodeId === numColsId;
+      for (let i = block.header.numColumnsRange.start; i < block.header.numColumnsRange.end; i++) {
+        const existing = map.get(i);
+        if (!existing || isActive || !existing.isActive) {
+          map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+        }
+      }
+    }
+
+    if (activeNodeId === numRowsId || hoveredNodeId === numRowsId) {
+      const isActive = activeNodeId === numRowsId;
+      for (let i = block.header.numRowsRange.start; i < block.header.numRowsRange.end; i++) {
+        const existing = map.get(i);
+        if (!existing || isActive || !existing.isActive) {
+          map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+        }
+      }
+    }
+
+    block.columns.forEach((col) => {
+      // Check if the column itself is active/hovered
+      const isColActive = col.id === activeNodeId;
+      const isColHovered = col.id === hoveredNodeId;
+
+      if (isColActive || isColHovered) {
+        const color = getTypeColor(col.typeString);
+        // Highlight the entire column: name + type + data
+        for (let i = col.nameByteRange.start; i < col.dataByteRange.end; i++) {
+          const existing = map.get(i);
+          if (!existing || isColActive || (isColHovered && !existing.isActive)) {
+            map.set(i, { color, isActive: isColActive, isHovered: isColHovered });
+          }
+        }
+      }
+
+      // Check for column metadata section (name + type together)
+      const colMetaId = `${col.id}-meta`;
+      const colNameId = `${col.id}-name`;
+      const colTypeId = `${col.id}-type`;
+
+      if (activeNodeId === colMetaId || hoveredNodeId === colMetaId) {
+        const isActive = activeNodeId === colMetaId;
+        // Highlight both name and type ranges
+        for (let i = col.nameByteRange.start; i < col.typeByteRange.end; i++) {
+          const existing = map.get(i);
+          if (!existing || isActive || !existing.isActive) {
+            map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+          }
+        }
+      }
+
+      if (activeNodeId === colNameId || hoveredNodeId === colNameId) {
+        const isActive = activeNodeId === colNameId;
+        for (let i = col.nameByteRange.start; i < col.nameByteRange.end; i++) {
+          const existing = map.get(i);
+          if (!existing || isActive || !existing.isActive) {
+            map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+          }
+        }
+      }
+
+      if (activeNodeId === colTypeId || hoveredNodeId === colTypeId) {
+        const isActive = activeNodeId === colTypeId;
+        for (let i = col.typeByteRange.start; i < col.typeByteRange.end; i++) {
+          const existing = map.get(i);
+          if (!existing || isActive || !existing.isActive) {
+            map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+          }
+        }
+      }
+
+      // Also visit individual values
+      col.values.forEach((node) => visitNode(node, 0));
+    });
   });
 
   return map;
@@ -187,8 +355,14 @@ export function HexViewer() {
         node.children?.forEach((child) => visitNode(child, depth + 1));
       }
 
-      parsedData.rows.forEach((row) => {
+      parsedData.rows?.forEach((row) => {
         row.values.forEach((node) => visitNode(node, 0));
+      });
+      // TODO: Handle blocks for Native format
+      parsedData.blocks?.forEach((block) => {
+        block.columns.forEach((col) => {
+          col.values.forEach((node) => visitNode(node, 0));
+        });
       });
 
       if (deepestNode) {

@@ -166,3 +166,191 @@
 .ast-children {
   /* Children are indented via margin-left on .ast-node */
 }
+
+/* Block-based display (Native format) */
+.ast-block {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.ast-block-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.ast-block-header:hover {
+  color: var(--text-primary);
+}
+
+.ast-block-label {
+  font-weight: 500;
+  color: var(--type-array);
+}
+
+.ast-block-info {
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.ast-block-bytes {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+/* Column display within blocks */
+.ast-column {
+  margin-left: calc(var(--depth, 0) * 16px);
+}
+
+.ast-column-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  margin-left: calc(var(--depth, 1) * 16px);
+  border-left: 3px solid transparent;
+  transition: background-color 0.1s;
+}
+
+.ast-column-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+}
+
+.ast-column-header.active {
+  background: rgba(255, 255, 255, 0.1);
+  border-left-color: var(--node-color, var(--accent-color));
+}
+
+.ast-column-header.hovered {
+  background: rgba(255, 255, 255, 0.08);
+  border-left-color: var(--node-color, var(--accent-color));
+}
+
+.ast-column-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 500;
+  color: #000;
+  flex-shrink: 0;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ast-column-name {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.ast-column-count {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.ast-column-bytes {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+/* Metadata display (block headers, column definitions) */
+.ast-metadata-section {
+  margin-bottom: 4px;
+}
+
+.ast-metadata-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  color: var(--text-muted);
+  margin-left: calc(var(--depth, 1) * 16px);
+  font-size: 12px;
+  border-left: 3px solid transparent;
+  transition: background-color 0.1s;
+}
+
+.ast-metadata-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+}
+
+.ast-metadata-header.active {
+  background: rgba(255, 255, 255, 0.1);
+  border-left-color: var(--type-special);
+}
+
+.ast-metadata-header.hovered {
+  background: rgba(255, 255, 255, 0.08);
+  border-left-color: var(--type-special);
+}
+
+.ast-metadata-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  margin-left: calc(var(--depth, 1) * 16px);
+  font-size: 12px;
+  border-left: 3px solid transparent;
+  transition: background-color 0.1s;
+}
+
+.ast-metadata-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ast-metadata-item.active {
+  background: rgba(255, 255, 255, 0.1);
+  border-left-color: var(--type-special);
+}
+
+.ast-metadata-item.hovered {
+  background: rgba(255, 255, 255, 0.08);
+  border-left-color: var(--type-special);
+}
+
+.ast-metadata-badge {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-weight: 500;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.ast-metadata-label {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.ast-metadata-value {
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ast-metadata-bytes {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: auto;
+  flex-shrink: 0;
+}

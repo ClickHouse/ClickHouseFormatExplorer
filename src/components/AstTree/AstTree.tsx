@@ -151,9 +151,13 @@ const AstNodeItem = memo(function AstNodeItem({ node, depth, columnName }: AstNo
 export function AstTree() {
   const parsedData = useStore((s) => s.parsedData);
   const expandedNodes = useStore((s) => s.expandedNodes);
+  const activeNodeId = useStore((s) => s.activeNodeId);
+  const hoveredNodeId = useStore((s) => s.hoveredNodeId);
   const expandAll = useStore((s) => s.expandAll);
   const collapseAll = useStore((s) => s.collapseAll);
   const toggleExpanded = useStore((s) => s.toggleExpanded);
+  const setActiveNode = useStore((s) => s.setActiveNode);
+  const setHoveredNode = useStore((s) => s.setHoveredNode);
 
   if (!parsedData) {
     return (
@@ -162,6 +166,9 @@ export function AstTree() {
       </div>
     );
   }
+
+  const isBlockBased = !!parsedData.blocks;
+  const itemCount = parsedData.rows?.length ?? parsedData.blocks?.length ?? 0;
 
   return (
     <div className="ast-tree">
@@ -173,12 +180,130 @@ export function AstTree() {
           Collapse All
         </button>
         <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 11 }}>
-          {parsedData.totalBytes} bytes | {parsedData.rows.length} row(s) |{' '}
+          {parsedData.totalBytes} bytes | {itemCount} {isBlockBased ? 'block(s)' : 'row(s)'} |{' '}
           {parsedData.header.columnCount} column(s)
         </span>
       </div>
 
-      {parsedData.rows.map((row, rowIndex) => {
+      {/* RowBinary Header */}
+      {parsedData.rows && (() => {
+        const headerId = 'rowbinary-header';
+        const isHeaderExpanded = expandedNodes.has(headerId);
+        const headerByteCount = parsedData.header.byteRange.end - parsedData.header.byteRange.start;
+        const columnCountId = 'rowbinary-header-colcount';
+
+        return (
+          <div className="ast-metadata-section" style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-color)' }}>
+            <div
+              className={`ast-metadata-header ${activeNodeId === headerId ? 'active' : ''} ${hoveredNodeId === headerId ? 'hovered' : ''}`}
+              onClick={() => {
+                setActiveNode(headerId);
+                toggleExpanded(headerId);
+              }}
+              onMouseEnter={() => setHoveredNode(headerId)}
+              onMouseLeave={() => setHoveredNode(null)}
+              style={{ '--depth': 0 } as React.CSSProperties}
+            >
+              <span>{isHeaderExpanded ? '▼' : '▶'}</span>
+              <span className="ast-metadata-badge">Header</span>
+              <span className="ast-metadata-label">RowBinaryWithNamesAndTypes header</span>
+              <span className="ast-metadata-bytes">
+                [{parsedData.header.byteRange.start}:{parsedData.header.byteRange.end}] ({headerByteCount}B)
+              </span>
+            </div>
+            {isHeaderExpanded && (
+              <div className="ast-children">
+                {/* Column count */}
+                <div
+                  className={`ast-metadata-item ${activeNodeId === columnCountId ? 'active' : ''} ${hoveredNodeId === columnCountId ? 'hovered' : ''}`}
+                  style={{ '--depth': 1 } as React.CSSProperties}
+                  onClick={() => setActiveNode(columnCountId)}
+                  onMouseEnter={() => setHoveredNode(columnCountId)}
+                  onMouseLeave={() => setHoveredNode(null)}
+                >
+                  <span className="ast-metadata-badge">LEB128</span>
+                  <span className="ast-metadata-label">columnCount:</span>
+                  <span className="ast-metadata-value">{parsedData.header.columnCount}</span>
+                  <span className="ast-metadata-bytes">
+                    [{parsedData.header.columnCountRange.start}:{parsedData.header.columnCountRange.end}] (
+                    {parsedData.header.columnCountRange.end - parsedData.header.columnCountRange.start}B)
+                  </span>
+                </div>
+
+                {/* Column definitions */}
+                {parsedData.header.columns.map((col, colIndex) => {
+                  const colDefId = `rowbinary-header-col-${colIndex}`;
+                  const colNameId = `rowbinary-header-col-${colIndex}-name`;
+                  const colTypeId = `rowbinary-header-col-${colIndex}-type`;
+                  const isColDefExpanded = expandedNodes.has(colDefId);
+
+                  return (
+                    <div key={colDefId} className="ast-metadata-section">
+                      <div
+                        className={`ast-metadata-header ${activeNodeId === colDefId ? 'active' : ''} ${hoveredNodeId === colDefId ? 'hovered' : ''}`}
+                        onClick={() => {
+                          setActiveNode(colDefId);
+                          toggleExpanded(colDefId);
+                        }}
+                        onMouseEnter={() => setHoveredNode(colDefId)}
+                        onMouseLeave={() => setHoveredNode(null)}
+                        style={{ '--depth': 1 } as React.CSSProperties}
+                      >
+                        <span>{isColDefExpanded ? '▼' : '▶'}</span>
+                        <span className="ast-column-badge" style={{ background: getTypeColor(col.typeString) }}>
+                          {col.typeString.length > 20 ? col.typeString.split('(')[0] + '(...)' : col.typeString}
+                        </span>
+                        <span className="ast-column-name">{col.name}</span>
+                        <span className="ast-metadata-bytes">
+                          [{col.nameByteRange.start}:{col.typeByteRange.end}] (
+                          {col.typeByteRange.end - col.nameByteRange.start}B)
+                        </span>
+                      </div>
+                      {isColDefExpanded && (
+                        <div className="ast-children">
+                          <div
+                            className={`ast-metadata-item ${activeNodeId === colNameId ? 'active' : ''} ${hoveredNodeId === colNameId ? 'hovered' : ''}`}
+                            style={{ '--depth': 2 } as React.CSSProperties}
+                            onClick={() => setActiveNode(colNameId)}
+                            onMouseEnter={() => setHoveredNode(colNameId)}
+                            onMouseLeave={() => setHoveredNode(null)}
+                          >
+                            <span className="ast-metadata-badge">String</span>
+                            <span className="ast-metadata-label">name:</span>
+                            <span className="ast-metadata-value">"{col.name}"</span>
+                            <span className="ast-metadata-bytes">
+                              [{col.nameByteRange.start}:{col.nameByteRange.end}] (
+                              {col.nameByteRange.end - col.nameByteRange.start}B)
+                            </span>
+                          </div>
+                          <div
+                            className={`ast-metadata-item ${activeNodeId === colTypeId ? 'active' : ''} ${hoveredNodeId === colTypeId ? 'hovered' : ''}`}
+                            style={{ '--depth': 2 } as React.CSSProperties}
+                            onClick={() => setActiveNode(colTypeId)}
+                            onMouseEnter={() => setHoveredNode(colTypeId)}
+                            onMouseLeave={() => setHoveredNode(null)}
+                          >
+                            <span className="ast-metadata-badge">String</span>
+                            <span className="ast-metadata-label">type:</span>
+                            <span className="ast-metadata-value">"{col.typeString}"</span>
+                            <span className="ast-metadata-bytes">
+                              [{col.typeByteRange.start}:{col.typeByteRange.end}] (
+                              {col.typeByteRange.end - col.typeByteRange.start}B)
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Row-based display (RowBinary) */}
+      {parsedData.rows?.map((row, rowIndex) => {
         const rowId = `row-${rowIndex}`;
         const isExpanded = expandedNodes.has(rowId);
 
@@ -202,6 +327,201 @@ export function AstTree() {
                     columnName={parsedData.header.columns[colIndex]?.name}
                   />
                 ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Block-based display (Native) */}
+      {parsedData.blocks?.map((block, blockIndex) => {
+        const blockId = `block-${blockIndex}`;
+        const blockHeaderId = `block-${blockIndex}-header`;
+        const isBlockExpanded = expandedNodes.has(blockId);
+        const isHeaderExpanded = expandedNodes.has(blockHeaderId);
+        const byteCount = block.byteRange.end - block.byteRange.start;
+
+        // IDs for header metadata items (for hover highlighting)
+        const numColsId = `block-${blockIndex}-numcols`;
+        const numRowsId = `block-${blockIndex}-numrows`;
+
+        return (
+          <div key={blockId} className="ast-block">
+            <div className="ast-block-header" onClick={() => toggleExpanded(blockId)}>
+              <span>{isBlockExpanded ? '▼' : '▶'}</span>
+              <span className="ast-block-label">Block {blockIndex}</span>
+              <span className="ast-block-info">
+                {block.rowCount} rows × {block.columns.length} columns
+              </span>
+              <span className="ast-block-bytes">
+                [{block.byteRange.start}:{block.byteRange.end}] ({byteCount}B)
+              </span>
+            </div>
+            {isBlockExpanded && (
+              <div className="ast-children">
+                {/* Block Header Metadata */}
+                <div className="ast-metadata-section">
+                  <div
+                    className={`ast-metadata-header ${activeNodeId === blockHeaderId ? 'active' : ''} ${hoveredNodeId === blockHeaderId ? 'hovered' : ''}`}
+                    onClick={() => {
+                      setActiveNode(blockHeaderId);
+                      toggleExpanded(blockHeaderId);
+                    }}
+                    onMouseEnter={() => setHoveredNode(blockHeaderId)}
+                    onMouseLeave={() => setHoveredNode(null)}
+                    style={{ '--depth': 1 } as React.CSSProperties}
+                  >
+                    <span>{isHeaderExpanded ? '▼' : '▶'}</span>
+                    <span className="ast-metadata-badge">Header</span>
+                    <span className="ast-metadata-label">Block metadata</span>
+                    <span className="ast-metadata-bytes">
+                      [{block.header.numColumnsRange.start}:{block.header.numRowsRange.end}] (
+                      {block.header.numRowsRange.end - block.header.numColumnsRange.start}B)
+                    </span>
+                  </div>
+                  {isHeaderExpanded && (
+                    <div className="ast-children">
+                      <div
+                        className={`ast-metadata-item ${activeNodeId === numColsId ? 'active' : ''} ${hoveredNodeId === numColsId ? 'hovered' : ''}`}
+                        style={{ '--depth': 2 } as React.CSSProperties}
+                        onClick={() => setActiveNode(numColsId)}
+                        onMouseEnter={() => setHoveredNode(numColsId)}
+                        onMouseLeave={() => setHoveredNode(null)}
+                      >
+                        <span className="ast-metadata-badge">LEB128</span>
+                        <span className="ast-metadata-label">numColumns:</span>
+                        <span className="ast-metadata-value">{block.header.numColumns}</span>
+                        <span className="ast-metadata-bytes">
+                          [{block.header.numColumnsRange.start}:{block.header.numColumnsRange.end}] (
+                          {block.header.numColumnsRange.end - block.header.numColumnsRange.start}B)
+                        </span>
+                      </div>
+                      <div
+                        className={`ast-metadata-item ${activeNodeId === numRowsId ? 'active' : ''} ${hoveredNodeId === numRowsId ? 'hovered' : ''}`}
+                        style={{ '--depth': 2 } as React.CSSProperties}
+                        onClick={() => setActiveNode(numRowsId)}
+                        onMouseEnter={() => setHoveredNode(numRowsId)}
+                        onMouseLeave={() => setHoveredNode(null)}
+                      >
+                        <span className="ast-metadata-badge">LEB128</span>
+                        <span className="ast-metadata-label">numRows:</span>
+                        <span className="ast-metadata-value">{block.header.numRows}</span>
+                        <span className="ast-metadata-bytes">
+                          [{block.header.numRowsRange.start}:{block.header.numRowsRange.end}] (
+                          {block.header.numRowsRange.end - block.header.numRowsRange.start}B)
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Columns */}
+                {block.columns.map((col) => {
+                  const isColExpanded = expandedNodes.has(col.id);
+                  const isColActive = col.id === activeNodeId;
+                  const isColHovered = col.id === hoveredNodeId;
+                  const colByteCount = col.dataByteRange.end - col.dataByteRange.start;
+
+                  // IDs for column metadata (name and type)
+                  const colNameId = `${col.id}-name`;
+                  const colTypeId = `${col.id}-type`;
+                  const colMetaId = `${col.id}-meta`;
+                  const isColMetaExpanded = expandedNodes.has(colMetaId);
+
+                  return (
+                    <div key={col.id} className="ast-column">
+                      <div
+                        className={`ast-column-header ${isColActive ? 'active' : ''} ${isColHovered ? 'hovered' : ''}`}
+                        onClick={() => {
+                          setActiveNode(col.id);
+                          toggleExpanded(col.id);
+                        }}
+                        onMouseEnter={() => setHoveredNode(col.id)}
+                        onMouseLeave={() => setHoveredNode(null)}
+                        style={{ '--depth': 1, '--node-color': getTypeColor(col.typeString) } as React.CSSProperties}
+                      >
+                        <span>{isColExpanded ? '▼' : '▶'}</span>
+                        <span className="ast-column-badge" style={{ background: getTypeColor(col.typeString) }}>
+                          {col.typeString.length > 20 ? col.typeString.split('(')[0] + '(...)' : col.typeString}
+                        </span>
+                        <span className="ast-column-name">{col.name}</span>
+                        <span className="ast-column-count">[{col.values.length} values]</span>
+                        <span className="ast-column-bytes">
+                          [{col.dataByteRange.start}:{col.dataByteRange.end}] ({colByteCount}B)
+                        </span>
+                      </div>
+                      {isColExpanded && (
+                        <div className="ast-children">
+                          {/* Column Metadata (name + type definition) */}
+                          <div className="ast-metadata-section">
+                            <div
+                              className={`ast-metadata-header ${activeNodeId === colMetaId ? 'active' : ''} ${hoveredNodeId === colMetaId ? 'hovered' : ''}`}
+                              onClick={() => {
+                                setActiveNode(colMetaId);
+                                toggleExpanded(colMetaId);
+                              }}
+                              onMouseEnter={() => setHoveredNode(colMetaId)}
+                              onMouseLeave={() => setHoveredNode(null)}
+                              style={{ '--depth': 2 } as React.CSSProperties}
+                            >
+                              <span>{isColMetaExpanded ? '▼' : '▶'}</span>
+                              <span className="ast-metadata-badge">Meta</span>
+                              <span className="ast-metadata-label">Column definition</span>
+                              <span className="ast-metadata-bytes">
+                                [{col.nameByteRange.start}:{col.typeByteRange.end}] (
+                                {col.typeByteRange.end - col.nameByteRange.start}B)
+                              </span>
+                            </div>
+                            {isColMetaExpanded && (
+                              <div className="ast-children">
+                                <div
+                                  className={`ast-metadata-item ${activeNodeId === colNameId ? 'active' : ''} ${hoveredNodeId === colNameId ? 'hovered' : ''}`}
+                                  style={{ '--depth': 3 } as React.CSSProperties}
+                                  onClick={() => setActiveNode(colNameId)}
+                                  onMouseEnter={() => setHoveredNode(colNameId)}
+                                  onMouseLeave={() => setHoveredNode(null)}
+                                >
+                                  <span className="ast-metadata-badge">String</span>
+                                  <span className="ast-metadata-label">name:</span>
+                                  <span className="ast-metadata-value">"{col.name}"</span>
+                                  <span className="ast-metadata-bytes">
+                                    [{col.nameByteRange.start}:{col.nameByteRange.end}] (
+                                    {col.nameByteRange.end - col.nameByteRange.start}B)
+                                  </span>
+                                </div>
+                                <div
+                                  className={`ast-metadata-item ${activeNodeId === colTypeId ? 'active' : ''} ${hoveredNodeId === colTypeId ? 'hovered' : ''}`}
+                                  style={{ '--depth': 3 } as React.CSSProperties}
+                                  onClick={() => setActiveNode(colTypeId)}
+                                  onMouseEnter={() => setHoveredNode(colTypeId)}
+                                  onMouseLeave={() => setHoveredNode(null)}
+                                >
+                                  <span className="ast-metadata-badge">String</span>
+                                  <span className="ast-metadata-label">type:</span>
+                                  <span className="ast-metadata-value">"{col.typeString}"</span>
+                                  <span className="ast-metadata-bytes">
+                                    [{col.typeByteRange.start}:{col.typeByteRange.end}] (
+                                    {col.typeByteRange.end - col.typeByteRange.start}B)
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Column Values */}
+                          {col.values.map((node, valueIndex) => (
+                            <AstNodeItem
+                              key={node.id}
+                              node={node}
+                              depth={2}
+                              columnName={`[${valueIndex}]`}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
