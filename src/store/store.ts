@@ -1,12 +1,17 @@
 import { create } from 'zustand';
 import { clickhouse, DEFAULT_QUERY } from '../core/clickhouse/client';
-import { RowBinaryDecoder } from '../core/decoder/decoder';
+import { createDecoder } from '../core/decoder';
 import { AstNode, ParsedData } from '../core/types/ast';
+import { ClickHouseFormat } from '../core/types/formats';
 
 interface AppState {
   // Query
   query: string;
   setQuery: (query: string) => void;
+
+  // Format
+  format: ClickHouseFormat;
+  setFormat: (format: ClickHouseFormat) => void;
 
   // Data
   rawData: Uint8Array | null;
@@ -17,7 +22,7 @@ interface AppState {
 
   // Actions
   executeQuery: () => Promise<void>;
-  loadSampleData: () => void;
+  loadFile: (file: File) => Promise<void>;
 
   // UI state
   activeNodeId: string | null;
@@ -43,21 +48,36 @@ function collectAllNodeIds(parsedData: ParsedData): string[] {
     node.children?.forEach(visitNode);
   }
 
-  parsedData.rows.forEach((row, i) => {
+  // Row-based formats (RowBinary)
+  parsedData.rows?.forEach((row, i) => {
     ids.push(`row-${i}`);
     row.values.forEach(visitNode);
+  });
+
+  // Block-based formats (Native)
+  parsedData.blocks?.forEach((block, i) => {
+    ids.push(`block-${i}`);
+    block.columns.forEach((col, j) => {
+      ids.push(`block-${i}-col-${j}`);
+      col.values.forEach(visitNode);
+    });
   });
 
   return ids;
 }
 
 /**
- * Get the default expanded nodes (just rows)
+ * Get the default expanded nodes (rows or blocks)
  */
 function getDefaultExpanded(parsedData: ParsedData): Set<string> {
   const expanded = new Set<string>();
-  parsedData.rows.forEach((_, i) => {
+  // Row-based formats (RowBinary)
+  parsedData.rows?.forEach((_, i) => {
     expanded.add(`row-${i}`);
+  });
+  // Block-based formats (Native)
+  parsedData.blocks?.forEach((_, i) => {
+    expanded.add(`block-${i}`);
   });
   return expanded;
 }
@@ -65,6 +85,7 @@ function getDefaultExpanded(parsedData: ParsedData): Set<string> {
 export const useStore = create<AppState>((set, get) => ({
   // Initial state
   query: DEFAULT_QUERY,
+  format: ClickHouseFormat.RowBinaryWithNamesAndTypes,
   rawData: null,
   parsedData: null,
   parseError: null,
@@ -75,15 +96,16 @@ export const useStore = create<AppState>((set, get) => ({
   expandedNodes: new Set(),
 
   setQuery: (query) => set({ query }),
+  setFormat: (format) => set({ format }),
 
   executeQuery: async () => {
-    const { query } = get();
+    const { query, format } = get();
     set({ isLoading: true, parseError: null, queryTiming: null });
 
     try {
-      const { data, timing } = await clickhouse.query({ query });
+      const { data, timing } = await clickhouse.query({ query, format });
 
-      const decoder = new RowBinaryDecoder(data);
+      const decoder = createDecoder(data, format);
       const parsed = decoder.decode();
 
       set({
@@ -105,29 +127,19 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  loadSampleData: () => {
-    // Sample data for testing without ClickHouse
-    // This is the RBWNAT encoding of: SELECT 42 :: UInt32 AS num, 'hello' AS str
-    const sampleData = new Uint8Array([
-      // Header: 2 columns
-      0x02,
-      // Column names
-      0x03, 0x6e, 0x75, 0x6d, // "num"
-      0x03, 0x73, 0x74, 0x72, // "str"
-      // Column types
-      0x06, 0x55, 0x49, 0x6e, 0x74, 0x33, 0x32, // "UInt32"
-      0x06, 0x53, 0x74, 0x72, 0x69, 0x6e, 0x67, // "String"
-      // Row 1 data
-      0x2a, 0x00, 0x00, 0x00, // 42 as UInt32
-      0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f, // "hello"
-    ]);
+  loadFile: async (file: File) => {
+    const { format } = get();
+    set({ isLoading: true, parseError: null, queryTiming: null });
 
     try {
-      const decoder = new RowBinaryDecoder(sampleData);
+      const arrayBuffer = await file.arrayBuffer();
+      const data = new Uint8Array(arrayBuffer);
+
+      const decoder = createDecoder(data, format);
       const parsed = decoder.decode();
 
       set({
-        rawData: sampleData,
+        rawData: data,
         parsedData: parsed,
         isLoading: false,
         parseError: null,
@@ -140,6 +152,8 @@ export const useStore = create<AppState>((set, get) => ({
       set({
         parseError: error as Error,
         isLoading: false,
+        rawData: null,
+        parsedData: null,
       });
     }
   },

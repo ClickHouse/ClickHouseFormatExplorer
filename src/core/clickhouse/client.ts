@@ -1,9 +1,12 @@
+import { ClickHouseFormat } from '../types/formats';
+
 /**
- * ClickHouse HTTP client for fetching RowBinaryWithNamesAndTypes data
+ * ClickHouse HTTP client for fetching binary format data
  */
 
 export interface QueryOptions {
   query: string;
+  format?: ClickHouseFormat;
   timeout?: number;
 }
 
@@ -22,14 +25,14 @@ export class ClickHouseClient {
   /**
    * Execute a query and return raw binary data
    */
-  async query({ query, timeout = 30000 }: QueryOptions): Promise<QueryResult> {
+  async query({ query, format = ClickHouseFormat.RowBinaryWithNamesAndTypes, timeout = 30000 }: QueryOptions): Promise<QueryResult> {
     const startTime = performance.now();
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
-      const response = await fetch(`${this.baseUrl}/?default_format=RowBinaryWithNamesAndTypes`, {
+      const response = await fetch(`${this.baseUrl}/?default_format=${format}`, {
         method: 'POST',
         body: query,
         headers: {
