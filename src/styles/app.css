@@ -97,6 +97,36 @@
   gap: 8px;
 }
 
+.query-format-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.query-format-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.query-format-select {
+  padding: 4px 8px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.query-format-select:hover:not(:disabled) {
+  border-color: var(--accent-color);
+}
+
+.query-format-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .query-btn {
   padding: 6px 12px;
   border-radius: 4px;

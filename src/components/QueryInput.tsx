@@ -1,15 +1,20 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { useStore } from '../store/store';
 import { DEFAULT_QUERY } from '../core/clickhouse/client';
+import { ClickHouseFormat, FORMAT_METADATA } from '../core/types/formats';
 
 export function QueryInput() {
   const query = useStore((s) => s.query);
   const setQuery = useStore((s) => s.setQuery);
+  const format = useStore((s) => s.format);
+  const setFormat = useStore((s) => s.setFormat);
   const executeQuery = useStore((s) => s.executeQuery);
-  const loadSampleData = useStore((s) => s.loadSampleData);
+  const loadFile = useStore((s) => s.loadFile);
   const isLoading = useStore((s) => s.isLoading);
   const parseError = useStore((s) => s.parseError);
   const queryTiming = useStore((s) => s.queryTiming);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleExecute = useCallback(() => {
     executeQuery();
@@ -28,18 +33,66 @@ export function QueryInput() {
     setQuery(DEFAULT_QUERY);
   }, [setQuery]);
 
+  const handleFormatChange = useCallback(
+    (e: React.ChangeEvent<HTMLSelectElement>) => {
+      setFormat(e.target.value as ClickHouseFormat);
+    },
+    [setFormat]
+  );
+
+  const handleUploadClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleFileChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        loadFile(file);
+      }
+      // Reset the input so the same file can be selected again
+      e.target.value = '';
+    },
+    [loadFile]
+  );
+
   return (
     <div className="query-input">
       <div className="query-input-header">
         <span className="query-input-title">SQL Query</span>
+        <div className="query-format-selector">
+          <label htmlFor="format-select" className="query-format-label">
+            Format:
+          </label>
+          <select
+            id="format-select"
+            className="query-format-select"
+            value={format}
+            onChange={handleFormatChange}
+            disabled={isLoading}
+          >
+            {Object.values(ClickHouseFormat).map((fmt) => (
+              <option key={fmt} value={fmt}>
+                {FORMAT_METADATA[fmt].displayName}
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="query-input-actions">
+          <input
+            ref={fileInputRef}
+            type="file"
+            onChange={handleFileChange}
+            style={{ display: 'none' }}
+            accept="*"
+          />
           <button
             className="query-btn secondary"
-            onClick={loadSampleData}
+            onClick={handleUploadClick}
             disabled={isLoading}
-            title="Load sample data without connecting to ClickHouse"
+            title="Upload a binary file to decode"
           >
-            Load Sample
+            Upload
           </button>
           <button className="query-btn secondary" onClick={handleReset} disabled={isLoading}>
             Reset
