@@ -1,23 +1,15 @@
-import { BinaryReader } from './reader';
+import { FormatDecoder } from './format-decoder';
 import { decodeLEB128 } from './leb128';
 import { parseType } from '../parser/type-parser';
 import { ClickHouseType, typeToString } from '../types/clickhouse-types';
 import { AstNode, ByteRange, ColumnDefinition, HeaderNode, ParsedData, RowNode } from '../types/ast';
+import { ClickHouseFormat } from '../types/formats';
 
 /**
- * Main RowBinaryWithNamesAndTypes decoder
+ * RowBinaryWithNamesAndTypes format decoder
  */
-export class RowBinaryDecoder {
-  private reader: BinaryReader;
-  private nodeIdCounter = 0;
-
-  constructor(data: Uint8Array) {
-    this.reader = new BinaryReader(data);
-  }
-
-  private generateId(): string {
-    return `node-${this.nodeIdCounter++}`;
-  }
+export class RowBinaryDecoder extends FormatDecoder {
+  readonly format = ClickHouseFormat.RowBinaryWithNamesAndTypes;
 
   /**
    * Decode complete RBWNAT data
@@ -26,6 +18,7 @@ export class RowBinaryDecoder {
     const header = this.decodeHeader();
     const rows = this.decodeRows(header.columns);
     return {
+      format: this.format,
       header,
       rows,
       totalBytes: this.reader.length,
@@ -38,8 +31,10 @@ export class RowBinaryDecoder {
   private decodeHeader(): HeaderNode {
     const startOffset = this.reader.offset;
 
-    // Read column count
+    // Read column count with byte range tracking
+    const columnCountStart = this.reader.offset;
     const { value: columnCount } = decodeLEB128(this.reader);
+    const columnCountRange: ByteRange = { start: columnCountStart, end: this.reader.offset };
 
     // Read column names
     const names: Array<{ name: string; range: ByteRange }> = [];
@@ -81,6 +76,7 @@ export class RowBinaryDecoder {
     return {
       byteRange: { start: startOffset, end: this.reader.offset },
       columnCount,
+      columnCountRange,
       columns,
     };
   }

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ClickHouseContainer } from '@testcontainers/clickhouse';
-import { RowBinaryDecoder } from './decoder';
+import { RowBinaryDecoder } from './rowbinary-decoder';
 
 const IMAGE = 'clickhouse/clickhouse-server:latest';
 
@@ -27,10 +27,11 @@ describe('RowBinaryDecoder Integration Tests', () => {
       const result = decoder.decode();
 
       expect(result.header.columns).toHaveLength(expectedColumns);
-      expect(result.rows).toHaveLength(expectedRows);
+      expect(result.rows).toBeDefined();
+      expect(result.rows!).toHaveLength(expectedRows);
 
       // Verify all nodes have valid byte ranges
-      for (const row of result.rows) {
+      for (const row of result.rows!) {
         for (const node of row.values) {
           expect(node.byteRange.start).toBeLessThan(node.byteRange.end);
           expect(node.byteRange.end).toBeLessThanOrEqual(data.length);
@@ -44,25 +45,25 @@ describe('RowBinaryDecoder Integration Tests', () => {
     {
       const data = await query('SELECT 42::UInt8 as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe(42);
+      expect(result.rows![0].values[0].value).toBe(42);
     }
 
     {
       const data = await query('SELECT 1234::UInt16 as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe(1234);
+      expect(result.rows![0].values[0].value).toBe(1234);
     }
 
     {
       const data = await query('SELECT 123456::UInt32 as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe(123456);
+      expect(result.rows![0].values[0].value).toBe(123456);
     }
 
     {
       const data = await query('SELECT 9223372036854775807::UInt64 as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe(9223372036854775807n);
+      expect(result.rows![0].values[0].value).toBe(9223372036854775807n);
     }
 
     {
@@ -78,25 +79,25 @@ describe('RowBinaryDecoder Integration Tests', () => {
     {
       const data = await query('SELECT toInt8(-42) as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe(-42);
+      expect(result.rows![0].values[0].value).toBe(-42);
     }
 
     {
       const data = await query('SELECT toInt16(-1234) as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe(-1234);
+      expect(result.rows![0].values[0].value).toBe(-1234);
     }
 
     {
       const data = await query('SELECT toInt32(-123456) as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe(-123456);
+      expect(result.rows![0].values[0].value).toBe(-123456);
     }
 
     {
       const data = await query('SELECT toInt64(-9223372036854775807) as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe(-9223372036854775807n);
+      expect(result.rows![0].values[0].value).toBe(-9223372036854775807n);
     }
 
     {
@@ -113,46 +114,46 @@ describe('RowBinaryDecoder Integration Tests', () => {
     {
       const data = await query('SELECT 3.14::Float32 as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBeCloseTo(3.14, 2);
+      expect(result.rows![0].values[0].value).toBeCloseTo(3.14, 2);
     }
 
     {
       const data = await query('SELECT 3.141592653589793::Float64 as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBeCloseTo(3.141592653589793, 10);
+      expect(result.rows![0].values[0].value).toBeCloseTo(3.141592653589793, 10);
     }
 
     // String types
     {
       const data = await query("SELECT 'hello world'::String as val");
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe('hello world');
+      expect(result.rows![0].values[0].value).toBe('hello world');
     }
 
     {
       const data = await query("SELECT ''::String as val");
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe('');
+      expect(result.rows![0].values[0].value).toBe('');
     }
 
     {
       const data = await query("SELECT 'abc'::FixedString(5) as val");
       const result = decode(data, 1, 1);
       // Decoder may trim trailing nulls or keep them
-      expect(result.rows[0].values[0].value).toMatch(/^abc/);
+      expect(result.rows![0].values[0].value).toMatch(/^abc/);
     }
 
     // Boolean
     {
       const data = await query('SELECT true::Bool as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe(true);
+      expect(result.rows![0].values[0].value).toBe(true);
     }
 
     {
       const data = await query('SELECT false::Bool as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe(false);
+      expect(result.rows![0].values[0].value).toBe(false);
     }
 
     // Date/Time types
@@ -185,14 +186,14 @@ describe('RowBinaryDecoder Integration Tests', () => {
     {
       const data = await query("SELECT '550e8400-e29b-41d4-a716-446655440000'::UUID as val");
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe('550e8400-e29b-41d4-a716-446655440000');
+      expect(result.rows![0].values[0].value).toBe('550e8400-e29b-41d4-a716-446655440000');
     }
 
     // IP addresses
     {
       const data = await query("SELECT '192.168.1.1'::IPv4 as val");
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe('192.168.1.1');
+      expect(result.rows![0].values[0].value).toBe('192.168.1.1');
     }
 
     {
@@ -220,71 +221,71 @@ describe('RowBinaryDecoder Integration Tests', () => {
     {
       const data = await query('SELECT 42::Nullable(UInt32) as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].children?.[0].value).toBe(42);
+      expect(result.rows![0].values[0].children?.[0].value).toBe(42);
     }
 
     {
       const data = await query('SELECT NULL::Nullable(UInt32) as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].value).toBe(null);
+      expect(result.rows![0].values[0].value).toBe(null);
     }
 
     // Array
     {
       const data = await query('SELECT [1, 2, 3]::Array(UInt8) as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].children).toHaveLength(3);
+      expect(result.rows![0].values[0].children).toHaveLength(3);
     }
 
     {
       const data = await query('SELECT []::Array(UInt8) as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].children).toHaveLength(0);
+      expect(result.rows![0].values[0].children).toHaveLength(0);
     }
 
     {
       const data = await query('SELECT [[1, 2], [3, 4]]::Array(Array(UInt8)) as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].children).toHaveLength(2);
+      expect(result.rows![0].values[0].children).toHaveLength(2);
     }
 
     // Tuple
     {
       const data = await query('SELECT (1, 2, 3)::Tuple(UInt8, UInt16, UInt32) as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].children).toHaveLength(3);
+      expect(result.rows![0].values[0].children).toHaveLength(3);
     }
 
     {
       const data = await query("SELECT (1, 'hello')::Tuple(id UInt32, name String) as val");
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].children).toHaveLength(2);
+      expect(result.rows![0].values[0].children).toHaveLength(2);
     }
 
     // Map
     {
       const data = await query("SELECT map('a', 1, 'b', 2)::Map(String, UInt8) as val");
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].children).toHaveLength(2);
+      expect(result.rows![0].values[0].children).toHaveLength(2);
     }
 
     {
       const data = await query('SELECT map()::Map(String, UInt8) as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].children).toHaveLength(0);
+      expect(result.rows![0].values[0].children).toHaveLength(0);
     }
 
     // Enum
     {
       const data = await query("SELECT 'hello'::Enum8('hello' = 1, 'world' = 2) as val");
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].displayValue).toContain('hello');
+      expect(result.rows![0].values[0].displayValue).toContain('hello');
     }
 
     {
       const data = await query("SELECT 'world'::Enum16('hello' = 1, 'world' = 2) as val");
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].displayValue).toContain('world');
+      expect(result.rows![0].values[0].displayValue).toContain('world');
     }
 
     // LowCardinality
@@ -343,7 +344,7 @@ describe('RowBinaryDecoder Integration Tests', () => {
     {
       const data = await query('SELECT (1.5, 2.5)::Point as val');
       const result = decode(data, 1, 1);
-      expect(result.rows[0].values[0].children).toHaveLength(2);
+      expect(result.rows![0].values[0].children).toHaveLength(2);
     }
 
     {
@@ -370,7 +371,7 @@ describe('RowBinaryDecoder Integration Tests', () => {
       const data = await query('SELECT number::UInt32 as val FROM numbers(10)');
       const result = decode(data, 1, 10);
       for (let i = 0; i < 10; i++) {
-        expect(result.rows[i].values[0].value).toBe(i);
+        expect(result.rows![i].values[0].value).toBe(i);
       }
     }
 
