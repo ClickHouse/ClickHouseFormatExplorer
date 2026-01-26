@@ -1,5 +1,5 @@
-import { useMemo, useCallback } from 'react';
-import { FixedSizeList as List } from 'react-window';
+import { useMemo, useCallback, useRef, useEffect } from 'react';
+import { FixedSizeList as List, FixedSizeList } from 'react-window';
 import { useStore } from '../../store/store';
 import { AstNode } from '../../core/types/ast';
 import '../../styles/hex-viewer.css';
@@ -331,6 +331,19 @@ export function HexViewer() {
   const activeNodeId = useStore((s) => s.activeNodeId);
   const hoveredNodeId = useStore((s) => s.hoveredNodeId);
   const setActiveNode = useStore((s) => s.setActiveNode);
+  const scrollToByteOffset = useStore((s) => s.scrollToByteOffset);
+  const clearScrollTarget = useStore((s) => s.clearScrollTarget);
+
+  const listRef = useRef<FixedSizeList>(null);
+
+  // Scroll to byte offset when requested
+  useEffect(() => {
+    if (scrollToByteOffset !== null && listRef.current) {
+      const rowIndex = Math.floor(scrollToByteOffset / BYTES_PER_ROW);
+      listRef.current.scrollToItem(rowIndex, 'center');
+      clearScrollTarget();
+    }
+  }, [scrollToByteOffset, clearScrollTarget]);
 
   const highlightMap = useMemo(
     () => buildHighlightMap(parsedData, activeNodeId, hoveredNodeId),
@@ -385,6 +398,7 @@ export function HexViewer() {
   return (
     <div className="hex-viewer">
       <List
+        ref={listRef}
         height={window.innerHeight - 150} // Approximate, will be resized by parent
         itemCount={rowCount}
         itemSize={22}

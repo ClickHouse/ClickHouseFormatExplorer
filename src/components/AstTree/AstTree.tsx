@@ -78,6 +78,7 @@ const AstNodeItem = memo(function AstNodeItem({ node, depth, columnName }: AstNo
   const setActiveNode = useStore((s) => s.setActiveNode);
   const setHoveredNode = useStore((s) => s.setHoveredNode);
   const toggleExpanded = useStore((s) => s.toggleExpanded);
+  const scrollToHex = useStore((s) => s.scrollToHex);
 
   const isActive = node.id === activeNodeId;
   const isHovered = node.id === hoveredNodeId;
@@ -91,6 +92,10 @@ const AstNodeItem = memo(function AstNodeItem({ node, depth, columnName }: AstNo
       toggleExpanded(node.id);
     }
   }, [node.id, hasChildren, setActiveNode, toggleExpanded]);
+
+  const handleDoubleClick = useCallback(() => {
+    scrollToHex(node.byteRange.start);
+  }, [node.byteRange.start, scrollToHex]);
 
   const handleMouseEnter = useCallback(() => {
     setHoveredNode(node.id);
@@ -117,6 +122,7 @@ const AstNodeItem = memo(function AstNodeItem({ node, depth, columnName }: AstNo
         className={`ast-node ${isActive ? 'active' : ''} ${isHovered ? 'hovered' : ''}`}
         style={{ '--depth': depth, '--node-color': nodeColor } as React.CSSProperties}
         onClick={handleClick}
+        onDoubleClick={handleDoubleClick}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
       >
@@ -158,6 +164,7 @@ export function AstTree() {
   const toggleExpanded = useStore((s) => s.toggleExpanded);
   const setActiveNode = useStore((s) => s.setActiveNode);
   const setHoveredNode = useStore((s) => s.setHoveredNode);
+  const scrollToHex = useStore((s) => s.scrollToHex);
 
   if (!parsedData) {
     return (
@@ -200,6 +207,7 @@ export function AstTree() {
                 setActiveNode(headerId);
                 toggleExpanded(headerId);
               }}
+              onDoubleClick={() => scrollToHex(parsedData.header.byteRange.start)}
               onMouseEnter={() => setHoveredNode(headerId)}
               onMouseLeave={() => setHoveredNode(null)}
               style={{ '--depth': 0 } as React.CSSProperties}
@@ -218,6 +226,7 @@ export function AstTree() {
                   className={`ast-metadata-item ${activeNodeId === columnCountId ? 'active' : ''} ${hoveredNodeId === columnCountId ? 'hovered' : ''}`}
                   style={{ '--depth': 1 } as React.CSSProperties}
                   onClick={() => setActiveNode(columnCountId)}
+                  onDoubleClick={() => scrollToHex(parsedData.header.columnCountRange.start)}
                   onMouseEnter={() => setHoveredNode(columnCountId)}
                   onMouseLeave={() => setHoveredNode(null)}
                 >
@@ -245,6 +254,7 @@ export function AstTree() {
                           setActiveNode(colDefId);
                           toggleExpanded(colDefId);
                         }}
+                        onDoubleClick={() => scrollToHex(col.nameByteRange.start)}
                         onMouseEnter={() => setHoveredNode(colDefId)}
                         onMouseLeave={() => setHoveredNode(null)}
                         style={{ '--depth': 1 } as React.CSSProperties}
@@ -265,6 +275,7 @@ export function AstTree() {
                             className={`ast-metadata-item ${activeNodeId === colNameId ? 'active' : ''} ${hoveredNodeId === colNameId ? 'hovered' : ''}`}
                             style={{ '--depth': 2 } as React.CSSProperties}
                             onClick={() => setActiveNode(colNameId)}
+                            onDoubleClick={() => scrollToHex(col.nameByteRange.start)}
                             onMouseEnter={() => setHoveredNode(colNameId)}
                             onMouseLeave={() => setHoveredNode(null)}
                           >
@@ -280,6 +291,7 @@ export function AstTree() {
                             className={`ast-metadata-item ${activeNodeId === colTypeId ? 'active' : ''} ${hoveredNodeId === colTypeId ? 'hovered' : ''}`}
                             style={{ '--depth': 2 } as React.CSSProperties}
                             onClick={() => setActiveNode(colTypeId)}
+                            onDoubleClick={() => scrollToHex(col.typeByteRange.start)}
                             onMouseEnter={() => setHoveredNode(colTypeId)}
                             onMouseLeave={() => setHoveredNode(null)}
                           >
@@ -309,7 +321,11 @@ export function AstTree() {
 
         return (
           <div key={rowId} className="ast-row">
-            <div className="ast-row-header" onClick={() => toggleExpanded(rowId)}>
+            <div
+              className="ast-row-header"
+              onClick={() => toggleExpanded(rowId)}
+              onDoubleClick={() => scrollToHex(row.byteRange.start)}
+            >
               <span>{isExpanded ? '▼' : '▶'}</span>
               <span className="ast-row-label">Row {rowIndex}</span>
               <span className="ast-row-bytes">
@@ -347,7 +363,11 @@ export function AstTree() {
 
         return (
           <div key={blockId} className="ast-block">
-            <div className="ast-block-header" onClick={() => toggleExpanded(blockId)}>
+            <div
+              className="ast-block-header"
+              onClick={() => toggleExpanded(blockId)}
+              onDoubleClick={() => scrollToHex(block.byteRange.start)}
+            >
               <span>{isBlockExpanded ? '▼' : '▶'}</span>
               <span className="ast-block-label">Block {blockIndex}</span>
               <span className="ast-block-info">
@@ -367,6 +387,7 @@ export function AstTree() {
                       setActiveNode(blockHeaderId);
                       toggleExpanded(blockHeaderId);
                     }}
+                    onDoubleClick={() => scrollToHex(block.header.numColumnsRange.start)}
                     onMouseEnter={() => setHoveredNode(blockHeaderId)}
                     onMouseLeave={() => setHoveredNode(null)}
                     style={{ '--depth': 1 } as React.CSSProperties}
@@ -385,6 +406,7 @@ export function AstTree() {
                         className={`ast-metadata-item ${activeNodeId === numColsId ? 'active' : ''} ${hoveredNodeId === numColsId ? 'hovered' : ''}`}
                         style={{ '--depth': 2 } as React.CSSProperties}
                         onClick={() => setActiveNode(numColsId)}
+                        onDoubleClick={() => scrollToHex(block.header.numColumnsRange.start)}
                         onMouseEnter={() => setHoveredNode(numColsId)}
                         onMouseLeave={() => setHoveredNode(null)}
                       >
@@ -400,6 +422,7 @@ export function AstTree() {
                         className={`ast-metadata-item ${activeNodeId === numRowsId ? 'active' : ''} ${hoveredNodeId === numRowsId ? 'hovered' : ''}`}
                         style={{ '--depth': 2 } as React.CSSProperties}
                         onClick={() => setActiveNode(numRowsId)}
+                        onDoubleClick={() => scrollToHex(block.header.numRowsRange.start)}
                         onMouseEnter={() => setHoveredNode(numRowsId)}
                         onMouseLeave={() => setHoveredNode(null)}
                       >
@@ -436,6 +459,7 @@ export function AstTree() {
                           setActiveNode(col.id);
                           toggleExpanded(col.id);
                         }}
+                        onDoubleClick={() => scrollToHex(col.nameByteRange.start)}
                         onMouseEnter={() => setHoveredNode(col.id)}
                         onMouseLeave={() => setHoveredNode(null)}
                         style={{ '--depth': 1, '--node-color': getTypeColor(col.typeString) } as React.CSSProperties}
@@ -460,6 +484,7 @@ export function AstTree() {
                                 setActiveNode(colMetaId);
                                 toggleExpanded(colMetaId);
                               }}
+                              onDoubleClick={() => scrollToHex(col.nameByteRange.start)}
                               onMouseEnter={() => setHoveredNode(colMetaId)}
                               onMouseLeave={() => setHoveredNode(null)}
                               style={{ '--depth': 2 } as React.CSSProperties}
@@ -478,6 +503,7 @@ export function AstTree() {
                                   className={`ast-metadata-item ${activeNodeId === colNameId ? 'active' : ''} ${hoveredNodeId === colNameId ? 'hovered' : ''}`}
                                   style={{ '--depth': 3 } as React.CSSProperties}
                                   onClick={() => setActiveNode(colNameId)}
+                                  onDoubleClick={() => scrollToHex(col.nameByteRange.start)}
                                   onMouseEnter={() => setHoveredNode(colNameId)}
                                   onMouseLeave={() => setHoveredNode(null)}
                                 >
@@ -493,6 +519,7 @@ export function AstTree() {
                                   className={`ast-metadata-item ${activeNodeId === colTypeId ? 'active' : ''} ${hoveredNodeId === colTypeId ? 'hovered' : ''}`}
                                   style={{ '--depth': 3 } as React.CSSProperties}
                                   onClick={() => setActiveNode(colTypeId)}
+                                  onDoubleClick={() => scrollToHex(col.typeByteRange.start)}
                                   onMouseEnter={() => setHoveredNode(colTypeId)}
                                   onMouseLeave={() => setHoveredNode(null)}
                                 >

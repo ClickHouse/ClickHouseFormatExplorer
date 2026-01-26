@@ -28,6 +28,7 @@ interface AppState {
   activeNodeId: string | null;
   hoveredNodeId: string | null;
   expandedNodes: Set<string>;
+  scrollToByteOffset: number | null;
 
   // UI actions
   setActiveNode: (id: string | null) => void;
@@ -35,6 +36,8 @@ interface AppState {
   toggleExpanded: (id: string) => void;
   expandAll: () => void;
   collapseAll: () => void;
+  scrollToHex: (byteOffset: number) => void;
+  clearScrollTarget: () => void;
 }
 
 /**
@@ -94,6 +97,7 @@ export const useStore = create<AppState>((set, get) => ({
   activeNodeId: null,
   hoveredNodeId: null,
   expandedNodes: new Set(),
+  scrollToByteOffset: null,
 
   setQuery: (query) => set({ query }),
   setFormat: (format) => set({ format }),
@@ -180,4 +184,7 @@ export const useStore = create<AppState>((set, get) => ({
     }),
 
   collapseAll: () => set({ expandedNodes: new Set() }),
+
+  scrollToHex: (byteOffset) => set({ scrollToByteOffset: byteOffset }),
+  clearScrollTarget: () => set({ scrollToByteOffset: null }),
 }));
