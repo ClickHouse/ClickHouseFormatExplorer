@@ -1364,24 +1364,35 @@ export class NativeDecoder extends FormatDecoder {
         // NULL
         values.push({
           id: this.generateId(),
-          type: 'Dynamic',
+          type: 'Dynamic(NULL)',
           byteRange: { start: startOffset, end: this.reader.offset },
           value: null,
           displayValue: 'NULL',
           label: `[${i}]`,
-          metadata: { discriminator: disc },
+          metadata: { discriminator: disc, actualType: 'NULL' },
         });
       } else if (disc <= numTypes) {
         const variantNode = variantData[disc][variantPositions[disc]++];
+        const actualType = variantNode.type;
+        const isSharedVariant = disc === numTypes;
+
+        // Include the inner value as a child for better AST visualization
+        variantNode.label = 'value';
+
         values.push({
           id: this.generateId(),
-          type: 'Dynamic',
+          type: `Dynamic(${actualType})`,
           byteRange: variantNode.byteRange,
           value: variantNode.value,
           displayValue: variantNode.displayValue,
           label: `[${i}]`,
-          children: variantNode.children,
-          metadata: { discriminator: disc, actualType: variantNode.type },
+          children: [variantNode],
+          metadata: {
+            discriminator: disc,
+            actualType,
+            isSharedVariant,
+            serializationVersion: Number(version),
+          },
         });
       } else {
         values.push({
