@@ -1419,23 +1419,360 @@ export class NativeDecoder extends FormatDecoder {
   }
 
   /**
-   * JSON in Native format (complex - simplified implementation)
+   * JSON in Native format
+   *
+   * Actual format discovered through debugging:
+   * 1. max_dynamic_paths (UInt64) - typically 0
+   * 2. typed_paths_count (LEB128) - number of dynamic paths in this column
+   * 3. columns_count (LEB128) - same as typed_paths_count
+   * 4. Path names (String for each)
+   * 5. Column info for each column:
+   *    - offset (UInt64)
+   *    - serialization_kind (UInt16)
+   *    - type_name (String)
+   *    - metadata (UInt64)
+   * 6. TYPED SUB-COLUMN VALUES (if JSON type has typed paths like JSON(a Int32))
+   *    - These are raw values without flag bytes
+   * 7. Dynamic column values (flag byte + value for each column/row)
+   * 8. Shared data offsets (UInt64 per row)
+   *
+   * The resulting AST includes all structural elements as children.
    */
-  private decodeJSONColumn(_type: ClickHouseType, rowCount: number): AstNode[] {
-    // JSON is complex - for now, return placeholder
+  private decodeJSONColumn(type: ClickHouseType, rowCount: number): AstNode[] {
+    const startOffset = this.reader.offset;
     const values: AstNode[] = [];
+
+    // Read max_dynamic_paths (UInt64) with AST node
+    const maxDynPathsNode = this.decodeUInt64();
+    maxDynPathsNode.label = 'max_dynamic_paths';
+
+    // Read typed_paths_count with AST node
+    const typedPathsCountStart = this.reader.offset;
+    const { value: typedPathsCount } = decodeLEB128(this.reader);
+    const typedPathsCountNode: AstNode = {
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: typedPathsCountStart, end: this.reader.offset },
+      value: typedPathsCount,
+      displayValue: String(typedPathsCount),
+      label: 'typed_paths_count',
+    };
+
+    // Get typed sub-columns from JSON type
+    const jsonType = type as { kind: 'JSON'; typedPaths?: Map<string, ClickHouseType> };
+    const typedSubColumns = jsonType.typedPaths;
+
+    // Handle JSON with no dynamic paths
+    if (typedPathsCount === 0) {
+      // If there are typed sub-columns, read them
+      if (typedSubColumns && typedSubColumns.size > 0) {
+        // For fully-typed JSON: flag byte + typed values + shared offset
+        // Collect nodes per row: [flagNode, ...pathValueNodes]
+        const rowData: { flagNode: AstNode; pathNodes: Map<string, AstNode> }[] = [];
+
+        for (let row = 0; row < rowCount; row++) {
+          // Read flag byte (0 = object present)
+          const flagNode = this.decodeUInt8();
+          flagNode.label = 'object_present';
+
+          const pathNodes = new Map<string, AstNode>();
+          for (const [pathName, pathType] of typedSubColumns) {
+            const node = this.decodeValue(pathType);
+            pathNodes.set(pathName, node);
+          }
+
+          rowData.push({ flagNode, pathNodes });
+        }
+
+        // Read shared_data_offsets
+        const sharedOffsetNodes: AstNode[] = [];
+        for (let i = 0; i < rowCount; i++) {
+          const node = this.decodeUInt64();
+          node.label = `shared_data_offset[${i}]`;
+          sharedOffsetNodes.push(node);
+        }
+
+        // Build result nodes with all structural AST children
+        for (let row = 0; row < rowCount; row++) {
+          const children: AstNode[] = [];
+          const jsonValue: Record<string, unknown> = {};
+
+          // Add structural nodes
+          children.push(maxDynPathsNode);
+          children.push(typedPathsCountNode);
+          children.push(rowData[row].flagNode);
+
+          // Add path nodes
+          for (const [pathName] of typedSubColumns) {
+            const valueNode = rowData[row].pathNodes.get(pathName)!;
+            jsonValue[pathName] = valueNode.value;
+
+            children.push({
+              id: this.generateId(),
+              type: 'JSON path',
+              byteRange: valueNode.byteRange,
+              value: { [pathName]: valueNode.value },
+              displayValue: `${pathName}: ${valueNode.displayValue}`,
+              label: pathName,
+              children: [valueNode],
+            });
+          }
+
+          // Add shared offset node
+          children.push(sharedOffsetNodes[row]);
+
+          values.push({
+            id: this.generateId(),
+            type: 'JSON',
+            byteRange: { start: startOffset, end: this.reader.offset },
+            value: jsonValue,
+            displayValue: `{${typedSubColumns.size} paths}`,
+            label: `[${row}]`,
+            children,
+          });
+        }
+
+        return values;
+      }
+
+      // No typed sub-columns either - return empty JSON objects
+      // Read shared_data_offsets
+      const sharedOffsetNodes: AstNode[] = [];
+      for (let i = 0; i < rowCount; i++) {
+        const node = this.decodeUInt64();
+        node.label = `shared_data_offset[${i}]`;
+        sharedOffsetNodes.push(node);
+      }
+
+      for (let i = 0; i < rowCount; i++) {
+        values.push({
+          id: this.generateId(),
+          type: 'JSON',
+          byteRange: { start: startOffset, end: this.reader.offset },
+          value: {},
+          displayValue: '{0 paths}',
+          label: `[${i}]`,
+          children: [maxDynPathsNode, typedPathsCountNode, sharedOffsetNodes[i]],
+        });
+      }
+      return values;
+    }
+
+    // Read columns_count with AST node
+    const columnsCountStart = this.reader.offset;
+    const { value: columnsCount } = decodeLEB128(this.reader);
+    const columnsCountNode: AstNode = {
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: columnsCountStart, end: this.reader.offset },
+      value: columnsCount,
+      displayValue: String(columnsCount),
+      label: 'columns_count',
+    };
+
+    // Read path names with AST nodes
+    const pathNameNodes: AstNode[] = [];
+    const pathNames: string[] = [];
+    for (let i = 0; i < typedPathsCount; i++) {
+      const pathStart = this.reader.offset;
+      const { value: nameLen } = decodeLEB128(this.reader);
+      const { value: nameBytes } = this.reader.readBytes(nameLen);
+      const pathName = new TextDecoder().decode(nameBytes);
+      pathNames.push(pathName);
+
+      pathNameNodes.push({
+        id: this.generateId(),
+        type: 'String',
+        byteRange: { start: pathStart, end: this.reader.offset },
+        value: pathName,
+        displayValue: `"${pathName}"`,
+        label: `path_name[${i}]`,
+      });
+    }
+
+    // Read column info with AST nodes
+    const columnInfoNodes: AstNode[] = [];
+    const columnInfos: { typeName: string }[] = [];
+    for (let i = 0; i < columnsCount; i++) {
+      const infoStart = this.reader.offset;
+
+      const offsetNode = this.decodeUInt64();
+      offsetNode.label = 'offset';
+
+      const kindNode = this.decodeUInt16();
+      kindNode.label = 'serialization_kind';
+
+      const typeStart = this.reader.offset;
+      const { value: typeLen } = decodeLEB128(this.reader);
+      const { value: typeBytes } = this.reader.readBytes(typeLen);
+      const typeName = new TextDecoder().decode(typeBytes);
+      const typeNameNode: AstNode = {
+        id: this.generateId(),
+        type: 'String',
+        byteRange: { start: typeStart, end: this.reader.offset },
+        value: typeName,
+        displayValue: `"${typeName}"`,
+        label: 'type',
+      };
+
+      const metadataNode = this.decodeUInt64();
+      metadataNode.label = 'metadata';
+
+      columnInfos.push({ typeName });
+      columnInfoNodes.push({
+        id: this.generateId(),
+        type: 'column_info',
+        byteRange: { start: infoStart, end: this.reader.offset },
+        value: { offset: offsetNode.value, kind: kindNode.value, type: typeName, metadata: metadataNode.value },
+        displayValue: `${pathNames[i]}: ${typeName}`,
+        label: `column_info[${i}]`,
+        children: [offsetNode, kindNode, typeNameNode, metadataNode],
+      });
+    }
+
+    // Read typed sub-column values first (if any) - collect AstNodes per path
+    const typedPathNodes: Map<string, AstNode[]> = new Map();
+    if (typedSubColumns && typedSubColumns.size > 0) {
+      for (const [pathName, pathType] of typedSubColumns) {
+        const nodes: AstNode[] = [];
+        for (let row = 0; row < rowCount; row++) {
+          nodes.push(this.decodeValue(pathType));
+        }
+        typedPathNodes.set(pathName, nodes);
+      }
+    }
+
+    // Read dynamic column values (flag byte + value for each column/row) - collect AstNodes
+    const dynamicPathData: { flagNodes: AstNode[]; valueNodes: AstNode[] }[] = [];
+    for (let colIdx = 0; colIdx < columnsCount; colIdx++) {
+      const { typeName } = columnInfos[colIdx];
+      const colType = parseType(typeName);
+      const flagNodes: AstNode[] = [];
+      const valueNodes: AstNode[] = [];
+
+      for (let row = 0; row < rowCount; row++) {
+        const flagNode = this.decodeUInt8();
+        flagNode.label = 'flag';
+        flagNodes.push(flagNode);
+        valueNodes.push(this.decodeValue(colType));
+      }
+
+      dynamicPathData.push({ flagNodes, valueNodes });
+    }
+
+    // Read shared_data_offsets
+    const sharedOffsetNodes: AstNode[] = [];
     for (let i = 0; i < rowCount; i++) {
+      const node = this.decodeUInt64();
+      node.label = `shared_data_offset[${i}]`;
+      sharedOffsetNodes.push(node);
+    }
+
+    // Build result nodes with all structural AST children
+    for (let row = 0; row < rowCount; row++) {
+      const children: AstNode[] = [];
+      const jsonValue: Record<string, unknown> = {};
+
+      // Add header structural nodes (shared across rows)
+      children.push(maxDynPathsNode);
+      children.push(typedPathsCountNode);
+      children.push(columnsCountNode);
+
+      // Add path name nodes
+      for (const node of pathNameNodes) {
+        children.push(node);
+      }
+
+      // Add column info nodes
+      for (const node of columnInfoNodes) {
+        children.push(node);
+      }
+
+      // Add typed sub-column path nodes
+      for (const [pathName, nodes] of typedPathNodes) {
+        const valueNode = nodes[row];
+        this.setNestedValue(jsonValue, pathName, valueNode.value);
+
+        children.push({
+          id: this.generateId(),
+          type: 'JSON path',
+          byteRange: valueNode.byteRange,
+          value: { [pathName]: valueNode.value },
+          displayValue: `${pathName}: ${valueNode.displayValue}`,
+          label: pathName,
+          children: [valueNode],
+        });
+      }
+
+      // Add dynamic path nodes (with flag + value)
+      for (let colIdx = 0; colIdx < columnsCount; colIdx++) {
+        const pathName = pathNames[colIdx];
+        const { flagNodes, valueNodes } = dynamicPathData[colIdx];
+        const flagNode = flagNodes[row];
+        const valueNode = valueNodes[row];
+
+        this.setNestedValue(jsonValue, pathName, valueNode.value);
+
+        children.push({
+          id: this.generateId(),
+          type: 'JSON path',
+          byteRange: { start: flagNode.byteRange.start, end: valueNode.byteRange.end },
+          value: { [pathName]: valueNode.value },
+          displayValue: `${pathName}: ${valueNode.displayValue}`,
+          label: pathName,
+          children: [flagNode, valueNode],
+        });
+      }
+
+      // Add shared offset node
+      children.push(sharedOffsetNodes[row]);
+
+      const totalPaths = typedPathNodes.size + dynamicPathData.length;
       values.push({
         id: this.generateId(),
         type: 'JSON',
-        byteRange: { start: this.reader.offset, end: this.reader.offset },
-        value: {},
-        displayValue: '{}',
-        label: `[${i}]`,
-        metadata: { note: 'JSON decoding not fully implemented' },
+        byteRange: { start: startOffset, end: this.reader.offset },
+        value: jsonValue,
+        displayValue: `{${totalPaths} paths}`,
+        label: `[${row}]`,
+        children,
       });
     }
+
     return values;
+  }
+
+  /**
+   * Helper to set a nested path value in an object
+   * e.g., setNestedValue(obj, "nested.x", 10) -> obj.nested.x = 10
+   */
+  private setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): void {
+    const parts = path.split('.');
+    let current = obj;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!(parts[i] in current)) {
+        current[parts[i]] = {};
+      }
+      current = current[parts[i]] as Record<string, unknown>;
+    }
+    current[parts[parts.length - 1]] = value;
+  }
+
+  /**
+   * Helper to convert BigInt values to displayable format
+   */
+  private convertBigIntForDisplay(obj: unknown): unknown {
+    if (obj === null || obj === undefined) return obj;
+    if (typeof obj === 'bigint') return obj.toString();
+    if (Array.isArray(obj)) return obj.map(v => this.convertBigIntForDisplay(v));
+    if (typeof obj === 'object') {
+      const result: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(obj)) {
+        result[k] = this.convertBigIntForDisplay(v);
+      }
+      return result;
+    }
+    return obj;
   }
 
   // Point decoder (same as RowBinary)

@@ -774,13 +774,134 @@ describe('NativeDecoder Integration Tests', () => {
     it('decodes JSON simple', async () => {
       const data = await query("SELECT '{\"name\": \"test\"}'::JSON as val", jsonSettings);
       const result = decode(data, 1, 1);
-      expect(result.blocks![0].columns[0].values[0]).toBeDefined();
+      const jsonValue = result.blocks![0].columns[0].values[0].value as Record<string, unknown>;
+      expect(jsonValue).toBeDefined();
+      expect(jsonValue.name).toBe('test');
+    });
+
+    it('decodes JSON with multiple fields', async () => {
+      const data = await query("SELECT '{\"name\": \"test\", \"value\": 42}'::JSON as val", jsonSettings);
+      const result = decode(data, 1, 1);
+      const jsonValue = result.blocks![0].columns[0].values[0].value as Record<string, unknown>;
+      expect(jsonValue).toBeDefined();
+      expect(jsonValue.name).toBe('test');
+      expect(jsonValue.value).toBe(42n); // Int64 returns BigInt
     });
 
     it('decodes JSON with typed paths', async () => {
       const data = await query("SELECT '{\"id\": 42, \"name\": \"test\"}'::JSON(id UInt32, name String) as val", jsonSettings);
       const result = decode(data, 1, 1);
       expect(result.blocks![0].columns[0].values[0]).toBeDefined();
+    });
+
+    it('decodes JSON with typed IPv4 path and proper AST structure', async () => {
+      const data = await query("SELECT '{\"ip\": \"127.0.0.1\"}'::JSON(ip IPv4) as json_ipv4", jsonSettings);
+      const result = decode(data, 1, 1);
+
+      const jsonNode = result.blocks![0].columns[0].values[0];
+
+      // JSON node should have children including structural elements
+      expect(jsonNode.children).toBeDefined();
+      expect(jsonNode.displayValue).toBe('{1 paths}');
+
+      // Find structural elements
+      const maxDynPaths = jsonNode.children!.find(c => c.label === 'max_dynamic_paths');
+      expect(maxDynPaths).toBeDefined();
+      expect(maxDynPaths!.type).toBe('UInt64');
+      expect(maxDynPaths!.value).toBe(0n);
+
+      const typedPathsCount = jsonNode.children!.find(c => c.label === 'typed_paths_count');
+      expect(typedPathsCount).toBeDefined();
+      expect(typedPathsCount!.value).toBe(0);
+
+      const objectPresent = jsonNode.children!.find(c => c.label === 'object_present');
+      expect(objectPresent).toBeDefined();
+      expect(objectPresent!.type).toBe('UInt8');
+
+      const sharedOffset = jsonNode.children!.find(c => c.label?.startsWith('shared_data_offset'));
+      expect(sharedOffset).toBeDefined();
+      expect(sharedOffset!.type).toBe('UInt64');
+
+      // Find the "JSON path" node for "ip"
+      const pathNode = jsonNode.children!.find(c => c.type === 'JSON path' && c.label === 'ip');
+      expect(pathNode).toBeDefined();
+      expect(pathNode!.displayValue).toContain('ip:');
+
+      // Path node should have a child that is the actual IPv4 value
+      expect(pathNode!.children).toBeDefined();
+      expect(pathNode!.children!.length).toBeGreaterThanOrEqual(1);
+
+      const ipv4Node = pathNode!.children!.find(c => c.type === 'IPv4');
+      expect(ipv4Node).toBeDefined();
+      expect(ipv4Node!.displayValue).toBe('127.0.0.1');
+    });
+
+    it('decodes JSON followed by other columns', async () => {
+      const data = await query(`
+        SELECT
+          '{\"name\": \"test\", \"value\": 42}'::JSON as json_col,
+          42::UInt8 as uint8_col,
+          'hello'::String as string_col
+      `, jsonSettings);
+      const result = decode(data, 3, 1);
+
+      // JSON column
+      const jsonValue = result.blocks![0].columns[0].values[0].value as Record<string, unknown>;
+      expect(jsonValue.name).toBe('test');
+      expect(jsonValue.value).toBe(42n);
+
+      // Following columns should be decoded correctly
+      expect(result.blocks![0].columns[1].values[0].value).toBe(42);
+      expect(result.blocks![0].columns[2].values[0].value).toBe('hello');
+    });
+
+    it('decodes multiple JSON columns with different schemas', async () => {
+      const data = await query(`
+        SELECT
+          '{"name": "test", "value": 42}'::JSON as json_simple,
+          '{"id": 1, "nested": {"x": 10, "y": 20}}'::JSON as json_nested,
+          '{"id": 1, "nested": {"x": 10, "y": 20}}'::JSON(a Int32) as json_partially_typed
+      `, jsonSettings);
+      const result = decode(data, 3, 1);
+
+      // All three JSON columns should decode
+      expect(result.blocks![0].columns[0].values[0]).toBeDefined();
+      expect(result.blocks![0].columns[1].values[0]).toBeDefined();
+      expect(result.blocks![0].columns[2].values[0]).toBeDefined();
+    });
+
+    it('decodes 4 JSON columns with mixed schemas', async () => {
+      const data = await query(`
+        SELECT
+          '{"name": "test", "value": 42}'::JSON as json_simple,
+          '{"id": 1, "nested": {"x": 10, "y": 20}}'::JSON as json_nested,
+          '{"id": 1, "nested": {"x": 10, "y": 20}}'::JSON(a Int32) as json_partially_typed,
+          '{"id": 1}'::JSON(a Int32) as json_fully_typed
+      `, jsonSettings);
+      const result = decode(data, 4, 1);
+
+      // json_simple
+      const simple = result.blocks![0].columns[0].values[0].value as Record<string, unknown>;
+      expect(simple.name).toBe('test');
+      expect(simple.value).toBe(42n);
+
+      // json_nested
+      const nested = result.blocks![0].columns[1].values[0].value as Record<string, unknown>;
+      expect(nested.id).toBe(1n);
+      expect((nested.nested as Record<string, unknown>).x).toBe(10n);
+      expect((nested.nested as Record<string, unknown>).y).toBe(20n);
+
+      // json_partially_typed (has typed path 'a' not in input)
+      const partiallyTyped = result.blocks![0].columns[2].values[0].value as Record<string, unknown>;
+      expect(partiallyTyped.id).toBe(1n);
+      expect((partiallyTyped.nested as Record<string, unknown>).x).toBe(10n);
+      expect((partiallyTyped.nested as Record<string, unknown>).y).toBe(20n);
+      expect(partiallyTyped.a).toBe(0); // Default value for Int32
+
+      // json_fully_typed (has typed path 'a' not in input, only dynamic 'id')
+      const fullyTyped = result.blocks![0].columns[3].values[0].value as Record<string, unknown>;
+      expect(fullyTyped.id).toBe(1n);
+      expect(fullyTyped.a).toBe(0); // Default value for Int32
     });
   });
 
