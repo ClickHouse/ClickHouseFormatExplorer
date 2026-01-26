@@ -975,13 +975,13 @@ export class RowBinaryDecoder extends FormatDecoder {
         return { kind: 'FixedString', length };
       }
       case 0x17: {
-        // Enum8
-        const values = this.decodeEnumDefinition();
+        // Enum8 - values are Int8
+        const values = this.decodeEnumDefinition(1);
         return { kind: 'Enum8', values };
       }
       case 0x18: {
-        // Enum16
-        const values = this.decodeEnumDefinition();
+        // Enum16 - values are Int16
+        const values = this.decodeEnumDefinition(2);
         return { kind: 'Enum16', values };
       }
       case 0x19: {
@@ -1100,14 +1100,17 @@ export class RowBinaryDecoder extends FormatDecoder {
   }
 
   // Helper to decode enum definition in Dynamic context
-  private decodeEnumDefinition(): Map<number, string> {
+  // byteSize: 1 for Enum8, 2 for Enum16
+  private decodeEnumDefinition(byteSize: 1 | 2): Map<number, string> {
     const { value: count } = decodeLEB128(this.reader);
     const values = new Map<number, string>();
     for (let i = 0; i < count; i++) {
       const { value: nameLen } = decodeLEB128(this.reader);
       const { value: nameBytes } = this.reader.readBytes(nameLen);
       const name = new TextDecoder().decode(nameBytes);
-      const { value: enumValue } = this.reader.readInt16LE();
+      const enumValue = byteSize === 1
+        ? this.reader.readInt8().value
+        : this.reader.readInt16LE().value;
       values.set(enumValue, name);
     }
     return values;
