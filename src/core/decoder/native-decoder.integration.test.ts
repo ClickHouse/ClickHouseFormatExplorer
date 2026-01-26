@@ -739,29 +739,181 @@ describe('NativeDecoder Integration Tests', () => {
 
   // ============================================================
   // DYNAMIC - Native format: Type structure metadata + variant-like data
-  // Note: Native format Dynamic uses SharedVariant which has complex encoding.
-  // NULL values and DateTime64 work correctly. Simple values require SharedVariant
-  // decoding which is currently partially supported.
+  // V1 format: SharedVariant stores values as String representation
+  // V2 format: SharedVariant stores values as binary type index + binary value
   // ============================================================
   describe('Dynamic Type', () => {
+    // Helper to get data values (skipping header node)
+    const getDataValues = (result: ReturnType<typeof decode>) =>
+      result.blocks![0].columns[0].values.filter(v => v.type !== 'Dynamic.Header');
+
     it('decodes Dynamic NULL', async () => {
       const data = await query("SELECT NULL::Dynamic as val");
       const result = decode(data, 1, 1);
-      expect(result.blocks![0].columns[0].values[0].value).toBeNull();
+      const values = getDataValues(result);
+      expect(values[0].value).toBeNull();
     });
 
     it('decodes Dynamic with DateTime64', async () => {
       const data = await query("SELECT toDateTime64('2024-01-15 12:30:00', 3)::Dynamic as val");
       const result = decode(data, 1, 1);
-      expect(result.blocks![0].columns[0].values[0].displayValue).toContain('2024-01-15');
+      const values = getDataValues(result);
+      expect(values[0].displayValue).toContain('2024-01-15');
     });
 
-    // Dynamic values are decoded - verify they don't crash and return something
     it('decodes Dynamic with typed values', async () => {
       const data = await query("SELECT toUInt64(42)::Dynamic as val");
       const result = decode(data, 1, 1);
-      // Value is decoded (may be in SharedVariant format)
-      expect(result.blocks![0].columns[0].values[0]).toBeDefined();
+      const values = getDataValues(result);
+      expect(values[0]).toBeDefined();
+    });
+
+    it('decodes Dynamic with basic types via table', async () => {
+      // Create table and insert a few basic types
+      // Note: Native format Dynamic columns don't preserve ORDER BY in discriminator order,
+      // so we verify values exist without assuming specific row positions
+      await query(`
+        CREATE TABLE IF NOT EXISTS test_dynamic_types_native (
+          id UInt32,
+          val Dynamic
+        ) ENGINE = Memory
+      `);
+
+      // Insert a smaller set of types that work well together
+      await query(`
+        INSERT INTO test_dynamic_types_native SELECT 1, 'hello'::String
+        UNION ALL SELECT 2, toDateTime64('2024-01-15 12:30:00.123', 3)::DateTime64(3)
+        UNION ALL SELECT 3, NULL::Dynamic
+        UNION ALL SELECT 4, toUInt64(42)
+        UNION ALL SELECT 5, true::Bool
+      `);
+
+      // Select and decode
+      const data = await query('SELECT val FROM test_dynamic_types_native ORDER BY id');
+      const result = decode(data, 1, 5);
+
+      // Get all values from all blocks (filter out header nodes)
+      const allValues = result.blocks!.flatMap(b => b.columns[0].values);
+      const values = allValues.filter(v => v.type !== 'Dynamic.Header');
+      const headers = allValues.filter(v => v.type === 'Dynamic.Header');
+
+      // Verify we got header + 5 values
+      expect(headers).toHaveLength(1);
+      expect(values).toHaveLength(5);
+
+      // Header should contain metadata children (version, num_dynamic_types, etc.)
+      expect(headers[0].children).toBeDefined();
+      expect(headers[0].children!.length).toBeGreaterThan(0);
+
+      // Each value should be defined and have a type containing "Dynamic"
+      for (let i = 0; i < values.length; i++) {
+        expect(values[i]).toBeDefined();
+        expect(values[i].type).toContain('Dynamic');
+      }
+
+      // Verify expected values exist (Native format may not preserve ORDER BY in discriminators)
+      const displayValues = values.map(v => v.displayValue);
+      expect(displayValues.some(d => d.includes('hello') || d === '"hello"')).toBe(true);
+      expect(displayValues.some(d => d.includes('2024-01-15'))).toBe(true);
+      expect(values.some(v => v.value === null)).toBe(true);
+      expect(displayValues.some(d => d === '42' || d.includes('42'))).toBe(true);
+      expect(displayValues.some(d => d === 'true' || d === '1')).toBe(true);
+
+      // Cleanup
+      await query('DROP TABLE IF EXISTS test_dynamic_types_native');
+    });
+
+    it('decodes Dynamic with all supported types via table', async () => {
+      // Create table and insert one value of each type
+      // Note: Native format Dynamic columns don't preserve ORDER BY in discriminator order,
+      // so we verify values exist without assuming specific row positions
+      await query(`
+        CREATE TABLE IF NOT EXISTS test_dynamic_all_types_native (
+          id UInt32,
+          val Dynamic
+        ) ENGINE = Memory
+      `);
+
+      // Insert values of various types using INSERT SELECT for complex types
+      await query(`
+        INSERT INTO test_dynamic_all_types_native SELECT 1, 42::UInt8
+        UNION ALL SELECT 2, 1000::UInt16
+        UNION ALL SELECT 3, 100000::UInt32
+        UNION ALL SELECT 4, 10000000000::UInt64
+        UNION ALL SELECT 5, -42::Int8
+        UNION ALL SELECT 6, -1000::Int16
+        UNION ALL SELECT 7, -100000::Int32
+        UNION ALL SELECT 8, -10000000000::Int64
+        UNION ALL SELECT 9, 3.14::Float32
+        UNION ALL SELECT 10, 2.718281828::Float64
+        UNION ALL SELECT 11, 'hello world'::String
+        UNION ALL SELECT 12, true::Bool
+        UNION ALL SELECT 13, false::Bool
+        UNION ALL SELECT 14, toDate('2024-01-15')::Date
+        UNION ALL SELECT 15, toDate32('2024-06-20')::Date32
+        UNION ALL SELECT 16, toDateTime('2024-01-15 12:30:00')::DateTime
+        UNION ALL SELECT 17, toDateTime64('2024-01-15 12:30:00.123', 3)::DateTime64(3)
+        UNION ALL SELECT 18, toUUID('12345678-1234-5678-1234-567812345678')::UUID
+        UNION ALL SELECT 19, toIPv4('192.168.1.1')::IPv4
+        UNION ALL SELECT 20, toIPv6('::1')::IPv6
+        UNION ALL SELECT 21, [1, 2, 3]::Array(UInt8)
+        UNION ALL SELECT 22, (1, 'test')::Tuple(UInt32, String)
+        UNION ALL SELECT 23, map('key', 'value')::Map(String, String)
+        UNION ALL SELECT 24, NULL::Dynamic
+        UNION ALL SELECT 25, toDecimal32(123.45, 2)
+        UNION ALL SELECT 26, toDecimal64(12345.6789, 4)
+        UNION ALL SELECT 27, toBFloat16(1.5)
+        UNION ALL SELECT 28, CAST('active', 'Enum8(\\'active\\' = 1, \\'inactive\\' = 2)')
+        UNION ALL SELECT 29, CAST('pending', 'Enum16(\\'pending\\' = 100, \\'done\\' = 200)')
+      `);
+
+      // Select and decode
+      const data = await query('SELECT val FROM test_dynamic_all_types_native ORDER BY id');
+      const result = decode(data, 1, 29);
+
+      // Get all values from all blocks (filter out header nodes)
+      const allValues = result.blocks!.flatMap(b => b.columns[0].values);
+      const values = allValues.filter(v => v.type !== 'Dynamic.Header');
+      const headers = allValues.filter(v => v.type === 'Dynamic.Header');
+
+      // Verify we got header + 29 values
+      expect(headers).toHaveLength(1);
+      expect(values).toHaveLength(29);
+
+      // Header should contain metadata children
+      expect(headers[0].children).toBeDefined();
+      expect(headers[0].children!.length).toBeGreaterThan(0);
+
+      // Each value should be defined and have a type containing "Dynamic"
+      for (let i = 0; i < values.length; i++) {
+        expect(values[i]).toBeDefined();
+        expect(values[i].type).toContain('Dynamic');
+      }
+
+      // Helper to get actual type from Dynamic wrapper
+      const getActualType = (v: typeof values[0]) =>
+        v.type.includes('(') ? v.type : (v.metadata?.actualType as string || 'Dynamic');
+
+      // Collect all types and values for verification (order-independent)
+      const allTypes = values.map(v => getActualType(v));
+      const allDisplayValues = values.map(v => v.displayValue);
+
+      // Verify expected types are present (Native format may reorder)
+      expect(allTypes.some(t => t.includes('String'))).toBe(true);
+      expect(allTypes.some(t => t.includes('DateTime64'))).toBe(true);
+      expect(allTypes.some(t => t.includes('UUID'))).toBe(true);
+      expect(allTypes.some(t => t.includes('IPv4'))).toBe(true);
+      expect(allTypes.some(t => t.includes('Bool'))).toBe(true);
+      expect(allTypes.some(t => t.includes('NULL'))).toBe(true);
+
+      // Verify expected values are present
+      expect(allDisplayValues.some(d => d.includes('hello world') || d === '"hello world"')).toBe(true);
+      expect(allDisplayValues.some(d => d.includes('2024-01-15'))).toBe(true);
+      expect(allDisplayValues.some(d => d.includes('192.168.1.1'))).toBe(true);
+      expect(values.some(v => v.value === null)).toBe(true);
+
+      // Cleanup
+      await query('DROP TABLE IF EXISTS test_dynamic_all_types_native');
     });
   });
 

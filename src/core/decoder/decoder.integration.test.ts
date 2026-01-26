@@ -623,6 +623,150 @@ describe('RowBinaryDecoder Integration Tests', () => {
       const result = decode(data, 1, 1);
       expect(result.rows![0].values[0].value).toBeNull();
     });
+
+    it('decodes Dynamic with all supported types via table', async () => {
+      // Create table and insert one value of each type
+      await query(`
+        CREATE TABLE IF NOT EXISTS test_dynamic_types (
+          id UInt32,
+          val Dynamic
+        ) ENGINE = Memory
+      `);
+
+      // Insert values of various types using INSERT SELECT for complex types
+      await query(`
+        INSERT INTO test_dynamic_types SELECT 1, 42::UInt8
+        UNION ALL SELECT 2, 1000::UInt16
+        UNION ALL SELECT 3, 100000::UInt32
+        UNION ALL SELECT 4, 10000000000::UInt64
+        UNION ALL SELECT 5, -42::Int8
+        UNION ALL SELECT 6, -1000::Int16
+        UNION ALL SELECT 7, -100000::Int32
+        UNION ALL SELECT 8, -10000000000::Int64
+        UNION ALL SELECT 9, 3.14::Float32
+        UNION ALL SELECT 10, 2.718281828::Float64
+        UNION ALL SELECT 11, 'hello world'::String
+        UNION ALL SELECT 12, true::Bool
+        UNION ALL SELECT 13, false::Bool
+        UNION ALL SELECT 14, toDate('2024-01-15')::Date
+        UNION ALL SELECT 15, toDate32('2024-06-20')::Date32
+        UNION ALL SELECT 16, toDateTime('2024-01-15 12:30:00')::DateTime
+        UNION ALL SELECT 17, toDateTime64('2024-01-15 12:30:00.123', 3)::DateTime64(3)
+        UNION ALL SELECT 18, toUUID('12345678-1234-5678-1234-567812345678')::UUID
+        UNION ALL SELECT 19, toIPv4('192.168.1.1')::IPv4
+        UNION ALL SELECT 20, toIPv6('::1')::IPv6
+        UNION ALL SELECT 21, [1, 2, 3]::Array(UInt8)
+        UNION ALL SELECT 22, (1, 'test')::Tuple(UInt32, String)
+        UNION ALL SELECT 23, map('key', 'value')::Map(String, String)
+        UNION ALL SELECT 24, NULL::Dynamic
+        UNION ALL SELECT 25, toDecimal32(123.45, 2)
+        UNION ALL SELECT 26, toDecimal64(12345.6789, 4)
+        UNION ALL SELECT 27, toBFloat16(1.5)
+        UNION ALL SELECT 28, CAST('active', 'Enum8(\\'active\\' = 1, \\'inactive\\' = 2)')
+        UNION ALL SELECT 29, CAST('pending', 'Enum16(\\'pending\\' = 100, \\'done\\' = 200)')
+      `);
+
+      // Select and decode
+      const data = await query('SELECT val FROM test_dynamic_types ORDER BY id');
+      const result = decode(data, 1, 29);
+
+      // Verify each row has a value (or null for the NULL case)
+      const values = result.rows!.map(r => r.values[0]);
+
+      // Helper to get the decoded type from metadata
+      const getDecodedType = (v: typeof values[0]) => v.metadata?.decodedType as string || '';
+
+      // Check specific types were decoded via metadata.decodedType
+      expect(getDecodedType(values[0])).toContain('UInt8');
+      expect(values[0].value).toBe(42);
+
+      expect(getDecodedType(values[1])).toContain('UInt16');
+      expect(values[1].value).toBe(1000);
+
+      expect(getDecodedType(values[2])).toContain('UInt32');
+      expect(values[2].value).toBe(100000);
+
+      expect(getDecodedType(values[3])).toContain('UInt64');
+      expect(values[3].value).toBe(10000000000n);
+
+      expect(getDecodedType(values[4])).toContain('Int8');
+      expect(values[4].value).toBe(-42);
+
+      expect(getDecodedType(values[5])).toContain('Int16');
+      expect(values[5].value).toBe(-1000);
+
+      expect(getDecodedType(values[6])).toContain('Int32');
+      expect(values[6].value).toBe(-100000);
+
+      expect(getDecodedType(values[7])).toContain('Int64');
+      expect(values[7].value).toBe(-10000000000n);
+
+      expect(getDecodedType(values[8])).toContain('Float32');
+      expect(values[8].value).toBeCloseTo(3.14, 2);
+
+      expect(getDecodedType(values[9])).toContain('Float64');
+      expect(values[9].value).toBeCloseTo(2.718281828, 5);
+
+      expect(getDecodedType(values[10])).toContain('String');
+      expect(values[10].value).toBe('hello world');
+
+      expect(getDecodedType(values[11])).toContain('Bool');
+      expect(values[11].value).toBe(true);
+
+      expect(getDecodedType(values[12])).toContain('Bool');
+      expect(values[12].value).toBe(false);
+
+      expect(getDecodedType(values[13])).toContain('Date');
+      expect(values[13].displayValue).toContain('2024-01-15');
+
+      expect(getDecodedType(values[14])).toContain('Date32');
+      expect(values[14].displayValue).toContain('2024-06-20');
+
+      expect(getDecodedType(values[15])).toContain('DateTime');
+      expect(values[15].displayValue).toContain('2024-01-15');
+
+      expect(getDecodedType(values[16])).toContain('DateTime64');
+      expect(values[16].displayValue).toContain('2024-01-15');
+
+      expect(getDecodedType(values[17])).toContain('UUID');
+      expect(values[17].value).toBe('12345678-1234-5678-1234-567812345678');
+
+      expect(getDecodedType(values[18])).toContain('IPv4');
+      expect(values[18].value).toBe('192.168.1.1');
+
+      expect(getDecodedType(values[19])).toContain('IPv6');
+      expect(values[19].displayValue).toContain('1');
+
+      expect(getDecodedType(values[20])).toContain('Array');
+      expect(values[20].children).toBeDefined();
+
+      expect(getDecodedType(values[21])).toContain('Tuple');
+      expect(values[21].children).toBeDefined();
+
+      expect(getDecodedType(values[22])).toContain('Map');
+      expect(values[22].children).toBeDefined();
+
+      // NULL
+      expect(values[23].value).toBeNull();
+
+      expect(getDecodedType(values[24])).toContain('Decimal32');
+      expect(getDecodedType(values[25])).toContain('Decimal64');
+
+      // BFloat16
+      expect(getDecodedType(values[26])).toContain('BFloat16');
+      expect(values[26].value).toBeCloseTo(1.5, 1);
+
+      // Enum8
+      expect(getDecodedType(values[27])).toContain('Enum8');
+      expect(values[27].displayValue).toContain('active');
+
+      // Enum16
+      expect(getDecodedType(values[28])).toContain('Enum16');
+      expect(values[28].displayValue).toContain('pending');
+
+      // Cleanup
+      await query('DROP TABLE IF EXISTS test_dynamic_types');
+    });
   });
 
   // ============================================================
