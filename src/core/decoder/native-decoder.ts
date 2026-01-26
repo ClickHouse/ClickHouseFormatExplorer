@@ -1247,110 +1247,256 @@ export class NativeDecoder extends FormatDecoder {
    * 1. DynamicStructure stream: version + type list
    * 2. DynamicData stream: internal Variant data (with extra SharedVariant)
    *
-   * The internal Variant has numTypes + 1 variants:
-   * - Index 0 to numTypes-1: declared types
-   * - Index numTypes: SharedVariant (values of other types)
-   * - Index 0xFF: NULL
+   * Discriminator encoding:
+   * - disc 0 to numTypes-1: declared types (0-indexed)
+   * - disc numTypes: SharedVariant (values of other types)
+   * - disc 0xFF: NULL
    *
    * V1 format (version=1): SharedVariant stores values as String representation
    * V2 format (version=2): SharedVariant stores values as binary type index + binary value
    */
   private decodeDynamicColumn(rowCount: number): AstNode[] {
     const startOffset = this.reader.offset;
+    const headerChildren: AstNode[] = [];
 
     // Read version (1 = V1, 2 = V2)
+    const versionStart = this.reader.offset;
     const { value: version } = this.reader.readUInt64LE();
+    headerChildren.push({
+      id: this.generateId(),
+      type: 'UInt64',
+      byteRange: { start: versionStart, end: this.reader.offset },
+      value: version,
+      displayValue: version.toString(),
+      label: 'version',
+    });
 
     // Read max_dynamic_types (V1 only - in V2 this field doesn't exist or has different meaning)
     if (version === 1n) {
-      decodeLEB128(this.reader); // max_dynamic_types, historical field
+      const maxTypesStart = this.reader.offset;
+      const { value: maxTypes } = decodeLEB128(this.reader);
+      headerChildren.push({
+        id: this.generateId(),
+        type: 'VarUInt',
+        byteRange: { start: maxTypesStart, end: this.reader.offset },
+        value: maxTypes,
+        displayValue: maxTypes.toString(),
+        label: 'max_dynamic_types',
+      });
     }
 
     // Read num_dynamic_types
+    const numTypesStart = this.reader.offset;
     const { value: numTypes } = decodeLEB128(this.reader);
+    headerChildren.push({
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: numTypesStart, end: this.reader.offset },
+      value: numTypes,
+      displayValue: numTypes.toString(),
+      label: 'num_dynamic_types',
+    });
 
     // Read type names
     const typeNames: string[] = [];
+    const typeNamesStart = this.reader.offset;
+    const typeNameNodes: AstNode[] = [];
     for (let i = 0; i < numTypes; i++) {
+      const nameStart = this.reader.offset;
       const { value: len } = decodeLEB128(this.reader);
       const { value: bytes } = this.reader.readBytes(len);
-      typeNames.push(new TextDecoder().decode(bytes));
+      const typeName = new TextDecoder().decode(bytes);
+      typeNames.push(typeName);
+      typeNameNodes.push({
+        id: this.generateId(),
+        type: 'String',
+        byteRange: { start: nameStart, end: this.reader.offset },
+        value: typeName,
+        displayValue: `"${typeName}"`,
+        label: `[${i}]`,
+      });
+    }
+    if (numTypes > 0) {
+      headerChildren.push({
+        id: this.generateId(),
+        type: 'Array(String)',
+        byteRange: { start: typeNamesStart, end: this.reader.offset },
+        value: typeNames,
+        displayValue: `[${typeNames.map(t => `"${t}"`).join(', ')}]`,
+        label: 'type_names',
+        children: typeNameNodes,
+      });
     }
 
     // Parse types
     const variants = typeNames.map(name => parseType(name));
 
     // Read Variant discriminators prefix (mode)
-    const { value: _mode } = this.reader.readUInt64LE();
+    const modeStart = this.reader.offset;
+    const { value: mode } = this.reader.readUInt64LE();
+    headerChildren.push({
+      id: this.generateId(),
+      type: 'UInt64',
+      byteRange: { start: modeStart, end: this.reader.offset },
+      value: mode,
+      displayValue: mode.toString(),
+      label: 'variant_mode',
+    });
 
     // Read discriminators
+    const discriminatorsStart = this.reader.offset;
     const discriminators: number[] = [];
+    const discNodes: AstNode[] = [];
     for (let i = 0; i < rowCount; i++) {
+      const discStart = this.reader.offset;
       const { value } = this.reader.readUInt8();
       discriminators.push(value);
+
+      // Map discriminator to type name for display
+      let discType: string;
+      if (value === 0xFF) discType = 'NULL';
+      else if (value === numTypes) discType = 'SharedVariant';
+      else if (value < numTypes) discType = typeNames[value];
+      else discType = `unknown(${value})`;
+
+      discNodes.push({
+        id: this.generateId(),
+        type: 'UInt8',
+        byteRange: { start: discStart, end: this.reader.offset },
+        value,
+        displayValue: `${value} (${discType})`,
+        label: `[${i}]`,
+      });
+    }
+    if (rowCount > 0) {
+      headerChildren.push({
+        id: this.generateId(),
+        type: 'Array(UInt8)',
+        byteRange: { start: discriminatorsStart, end: this.reader.offset },
+        value: discriminators,
+        displayValue: `[${discriminators.join(', ')}]`,
+        label: 'discriminators',
+        children: discNodes,
+      });
     }
 
+    const headerEndOffset = this.reader.offset;
+
     // Count values per variant type (including SharedVariant at index numTypes)
+    // Note: In Native format Dynamic, discriminators are 0-indexed for declared types:
+    //   disc 0..N-1 = declared types 0..N-1 (0-indexed)
+    //   disc N = SharedVariant
+    //   disc 0xFF = NULL
     const countPerVariant: number[] = new Array(numTypes + 1).fill(0);
     for (const disc of discriminators) {
-      if (disc !== 0xFF && disc <= numTypes) {
+      if (disc === numTypes) {
+        // SharedVariant (stored at index numTypes)
+        countPerVariant[numTypes]++;
+      } else if (disc !== 0xFF && disc < numTypes) {
+        // Declared type (0-indexed)
         countPerVariant[disc]++;
       }
     }
 
-    // Read sparse data for declared types
+    // Read sparse data for declared types AND SharedVariant
+    // IMPORTANT: SharedVariant data is stored at the position of the first empty type slot,
+    // NOT at the end. This is how ClickHouse Native format serializes Dynamic columns.
     const variantData: AstNode[][] = [];
+    const sharedVariantCount = countPerVariant[numTypes];
+    let sharedVariantRead = false;
+
     for (let v = 0; v < numTypes; v++) {
       const count = countPerVariant[v];
       if (count > 0) {
         variantData[v] = this.decodeColumnData(variants[v], count);
       } else {
         variantData[v] = [];
+        // Read SharedVariant data at the first empty type position
+        if (!sharedVariantRead && sharedVariantCount > 0) {
+          sharedVariantRead = true;
+          const sharedVariantData: AstNode[] = [];
+          if (version === 1n) {
+            // V1: SharedVariant stores values as length-prefixed String representation
+            for (let i = 0; i < sharedVariantCount; i++) {
+              const valueStart = this.reader.offset;
+              const { value: len } = decodeLEB128(this.reader);
+              const { value: bytes } = this.reader.readBytes(len);
+              const strValue = new TextDecoder().decode(bytes);
+
+              sharedVariantData.push({
+                id: this.generateId(),
+                type: 'String',
+                byteRange: { start: valueStart, end: this.reader.offset },
+                value: strValue,
+                displayValue: `"${strValue}"`,
+                metadata: { isSharedVariant: true, serializationVersion: 1 },
+              });
+            }
+          } else {
+            // V2: SharedVariant stores values as binary type index + binary value
+            for (let i = 0; i < sharedVariantCount; i++) {
+              const valueStart = this.reader.offset;
+              const { value: typeIdx } = decodeLEB128(this.reader);
+              const innerType = this.decodeDynamicBinaryType(typeIdx);
+              const innerValue = this.decodeValue(innerType);
+
+              sharedVariantData.push({
+                id: this.generateId(),
+                type: typeToString(innerType),
+                byteRange: { start: valueStart, end: this.reader.offset },
+                value: innerValue.value,
+                displayValue: innerValue.displayValue,
+                children: innerValue.children,
+                metadata: { isSharedVariant: true, binaryTypeIndex: typeIdx, serializationVersion: 2 },
+              });
+            }
+          }
+          variantData[numTypes] = sharedVariantData;
+        }
       }
     }
 
-    // Read SharedVariant data (index = numTypes)
-    const sharedVariantCount = countPerVariant[numTypes];
-    const sharedVariantData: AstNode[] = [];
-    if (sharedVariantCount > 0) {
-      if (version === 1n) {
-        // V1: SharedVariant stores values as length-prefixed String representation
-        for (let i = 0; i < sharedVariantCount; i++) {
-          const valueStart = this.reader.offset;
-          const { value: len } = decodeLEB128(this.reader);
-          const { value: bytes } = this.reader.readBytes(len);
-          const strValue = new TextDecoder().decode(bytes);
+    // If SharedVariant wasn't read (no empty type slots), read it at the end
+    if (!sharedVariantRead) {
+      const sharedVariantData: AstNode[] = [];
+      if (sharedVariantCount > 0) {
+        if (version === 1n) {
+          for (let i = 0; i < sharedVariantCount; i++) {
+            const valueStart = this.reader.offset;
+            const { value: len } = decodeLEB128(this.reader);
+            const { value: bytes } = this.reader.readBytes(len);
+            const strValue = new TextDecoder().decode(bytes);
 
-          sharedVariantData.push({
-            id: this.generateId(),
-            type: 'String',
-            byteRange: { start: valueStart, end: this.reader.offset },
-            value: strValue,
-            displayValue: `"${strValue}"`,
-            metadata: { isSharedVariant: true, serializationVersion: 1 },
-          });
-        }
-      } else {
-        // V2: SharedVariant stores values as binary type index + binary value
-        for (let i = 0; i < sharedVariantCount; i++) {
-          const valueStart = this.reader.offset;
-          const { value: typeIdx } = decodeLEB128(this.reader);
-          const innerType = this.decodeDynamicBinaryType(typeIdx);
-          const innerValue = this.decodeValue(innerType);
+            sharedVariantData.push({
+              id: this.generateId(),
+              type: 'String',
+              byteRange: { start: valueStart, end: this.reader.offset },
+              value: strValue,
+              displayValue: `"${strValue}"`,
+              metadata: { isSharedVariant: true, serializationVersion: 1 },
+            });
+          }
+        } else {
+          for (let i = 0; i < sharedVariantCount; i++) {
+            const valueStart = this.reader.offset;
+            const { value: typeIdx } = decodeLEB128(this.reader);
+            const innerType = this.decodeDynamicBinaryType(typeIdx);
+            const innerValue = this.decodeValue(innerType);
 
-          sharedVariantData.push({
-            id: this.generateId(),
-            type: typeToString(innerType),
-            byteRange: { start: valueStart, end: this.reader.offset },
-            value: innerValue.value,
-            displayValue: innerValue.displayValue,
-            children: innerValue.children,
-            metadata: { isSharedVariant: true, binaryTypeIndex: typeIdx, serializationVersion: 2 },
-          });
+            sharedVariantData.push({
+              id: this.generateId(),
+              type: typeToString(innerType),
+              byteRange: { start: valueStart, end: this.reader.offset },
+              value: innerValue.value,
+              displayValue: innerValue.displayValue,
+              children: innerValue.children,
+              metadata: { isSharedVariant: true, binaryTypeIndex: typeIdx, serializationVersion: 2 },
+            });
+          }
         }
       }
+      variantData[numTypes] = sharedVariantData;
     }
-    variantData[numTypes] = sharedVariantData;
 
     // Track current position in each variant's data
     const variantPositions: number[] = new Array(numTypes + 1).fill(0);
@@ -1371,10 +1517,33 @@ export class NativeDecoder extends FormatDecoder {
           label: `[${i}]`,
           metadata: { discriminator: disc, actualType: 'NULL' },
         });
-      } else if (disc <= numTypes) {
-        const variantNode = variantData[disc][variantPositions[disc]++];
+      } else if (disc === numTypes) {
+        // SharedVariant (disc N where N = numTypes)
+        const variantNode = variantData[numTypes][variantPositions[numTypes]++];
         const actualType = variantNode.type;
-        const isSharedVariant = disc === numTypes;
+
+        variantNode.label = 'value';
+
+        values.push({
+          id: this.generateId(),
+          type: `Dynamic(${actualType})`,
+          byteRange: variantNode.byteRange,
+          value: variantNode.value,
+          displayValue: variantNode.displayValue,
+          label: `[${i}]`,
+          children: [variantNode],
+          metadata: {
+            discriminator: disc,
+            actualType,
+            isSharedVariant: true,
+            serializationVersion: Number(version),
+          },
+        });
+      } else if (disc < numTypes) {
+        // Declared type (0-indexed: disc 0 = type 0, disc 1 = type 1, etc.)
+        const typeIndex = disc;
+        const variantNode = variantData[typeIndex][variantPositions[typeIndex]++];
+        const actualType = variantNode.type;
 
         // Include the inner value as a child for better AST visualization
         variantNode.label = 'value';
@@ -1390,7 +1559,7 @@ export class NativeDecoder extends FormatDecoder {
           metadata: {
             discriminator: disc,
             actualType,
-            isSharedVariant,
+            isSharedVariant: false,
             serializationVersion: Number(version),
           },
         });
@@ -1406,7 +1575,19 @@ export class NativeDecoder extends FormatDecoder {
       }
     }
 
-    return values;
+    // Create header node that contains all the Dynamic column metadata
+    const headerNode: AstNode = {
+      id: this.generateId(),
+      type: 'Dynamic.Header',
+      byteRange: { start: startOffset, end: headerEndOffset },
+      value: { version: Number(version), numTypes, typeNames },
+      displayValue: `Dynamic(${numTypes} types, v${version})`,
+      label: 'header',
+      children: headerChildren,
+    };
+
+    // Return header followed by values
+    return [headerNode, ...values];
   }
 
   /**
