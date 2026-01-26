@@ -133,6 +133,9 @@ SELECT
     -- ===========================================
     '{"name": "test", "value": 42}'::JSON as json_simple,
     '{"id": 1, "nested": {"x": 10, "y": 20}}'::JSON as json_nested,
+    '{"id": 1, "nested": {"x": 10, "y": 20}}'::JSON(a Int32) as json_partially_typed,
+    '{"id": 1 }'::JSON(a Int32) as json_fully_typed,
+    '{"ip": "127.0.0.1"}'::JSON(ip IPv4) as json_ipv4,
 
     -- ===========================================
     -- GEO TYPES

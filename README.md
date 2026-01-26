@@ -6,7 +6,7 @@ A web-based tool for visualizing ClickHouse RowBinary data, similar to ImHex. Fe
 
 ## Features
 
-- Format support: RowBinary and Native, modular system allows adding more
+- **Format support**: RowBinary and Native (Dynamic and JSON are not 100% yet), modular system allows adding more
 - **Hex Viewer**: Virtual-scrolling hex display with ASCII column
 - **AST Tree**: Collapsible tree view showing decoded structure
 - **Interactive Highlighting**: Selecting a node in the tree highlights corresponding bytes in the hex view (and vice versa)
