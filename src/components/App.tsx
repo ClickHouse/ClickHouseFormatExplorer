@@ -11,31 +11,37 @@ function App() {
         <h1 className="app-title">ClickHouse Format Explorer</h1>
       </header>
 
-      <div className="app-query">
-        <QueryInput />
-      </div>
-
-      <main className="app-main">
-        <PanelGroup direction="horizontal" autoSaveId="main-panels">
-          <Panel defaultSize={50} minSize={20}>
-            <div className="panel-container">
-              <div className="panel-header">Hex View</div>
-              <div className="panel-content">
-                <HexViewer />
-              </div>
-            </div>
-          </Panel>
-          <PanelResizeHandle className="resize-handle" />
-          <Panel defaultSize={50} minSize={20}>
-            <div className="panel-container">
-              <div className="panel-header">AST Tree</div>
-              <div className="panel-content">
-                <AstTree />
-              </div>
-            </div>
-          </Panel>
-        </PanelGroup>
-      </main>
+      <PanelGroup direction="vertical" autoSaveId="vertical-panels" className="app-body">
+        <Panel defaultSize={20} minSize={10} maxSize={50}>
+          <div className="app-query">
+            <QueryInput />
+          </div>
+        </Panel>
+        <PanelResizeHandle className="resize-handle-horizontal" />
+        <Panel defaultSize={80} minSize={30}>
+          <main className="app-main">
+            <PanelGroup direction="horizontal" autoSaveId="main-panels">
+              <Panel defaultSize={50} minSize={20}>
+                <div className="panel-container">
+                  <div className="panel-header">Hex View</div>
+                  <div className="panel-content">
+                    <HexViewer />
+                  </div>
+                </div>
+              </Panel>
+              <PanelResizeHandle className="resize-handle" />
+              <Panel defaultSize={50} minSize={20}>
+                <div className="panel-container">
+                  <div className="panel-header">AST Tree</div>
+                  <div className="panel-content">
+                    <AstTree />
+                  </div>
+                </div>
+              </Panel>
+            </PanelGroup>
+          </main>
+        </Panel>
+      </PanelGroup>
     </div>
   );
 }
