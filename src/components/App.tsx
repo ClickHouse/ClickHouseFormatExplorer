@@ -2,12 +2,14 @@ import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { HexViewer } from './HexViewer/HexViewer';
 import { AstTree } from './AstTree/AstTree';
 import { QueryInput } from './QueryInput';
+import logo from '../assets/clickhouse-yellow-badge.svg';
 import '../styles/app.css';
 
 function App() {
   return (
     <div className="app">
       <header className="app-header">
+        <img src={logo} alt="ClickHouse" className="app-logo" />
         <h1 className="app-title">ClickHouse Format Explorer</h1>
       </header>
 

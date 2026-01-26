@@ -7,12 +7,17 @@
 
 .app-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
   padding: 12px 16px;
   background: var(--bg-tertiary);
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
+}
+
+.app-logo {
+  height: 28px;
+  width: auto;
 }
 
 .app-title {
