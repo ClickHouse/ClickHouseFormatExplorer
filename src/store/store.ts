@@ -26,12 +26,13 @@ interface AppState {
 
   // UI state
   activeNodeId: string | null;
+  activeCopyText: string | null;
   hoveredNodeId: string | null;
   expandedNodes: Set<string>;
   scrollToByteOffset: number | null;
 
   // UI actions
-  setActiveNode: (id: string | null) => void;
+  setActiveNode: (id: string | null, copyText?: string | null) => void;
   setHoveredNode: (id: string | null) => void;
   toggleExpanded: (id: string) => void;
   expandAll: () => void;
@@ -95,6 +96,7 @@ export const useStore = create<AppState>((set, get) => ({
   isLoading: false,
   queryTiming: null,
   activeNodeId: null,
+  activeCopyText: null,
   hoveredNodeId: null,
   expandedNodes: new Set(),
   scrollToByteOffset: null,
@@ -119,6 +121,7 @@ export const useStore = create<AppState>((set, get) => ({
         queryTiming: timing,
         expandedNodes: getDefaultExpanded(parsed),
         activeNodeId: null,
+        activeCopyText: null,
         hoveredNodeId: null,
       });
     } catch (error) {
@@ -150,6 +153,7 @@ export const useStore = create<AppState>((set, get) => ({
         queryTiming: null,
         expandedNodes: getDefaultExpanded(parsed),
         activeNodeId: null,
+        activeCopyText: null,
         hoveredNodeId: null,
       });
     } catch (error) {
@@ -162,7 +166,7 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  setActiveNode: (id) => set({ activeNodeId: id }),
+  setActiveNode: (id, copyText) => set({ activeNodeId: id, activeCopyText: copyText ?? null }),
   setHoveredNode: (id) => set({ hoveredNodeId: id }),
 
   toggleExpanded: (id) =>
