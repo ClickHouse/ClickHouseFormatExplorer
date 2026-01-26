@@ -1,4 +1,4 @@
-# RowBinary Visualizer
+# ClickHouse Format Explorer
 
 A web-based tool for visualizing ClickHouse RowBinary data, similar to ImHex. Features an interactive hex viewer with AST-based type visualization. 100% vibecoded with Claude Code.
 
@@ -6,6 +6,7 @@ A web-based tool for visualizing ClickHouse RowBinary data, similar to ImHex. Fe
 
 ## Features
 
+- Format support: RowBinary and Native, modular system allows adding more
 - **Hex Viewer**: Virtual-scrolling hex display with ASCII column
 - **AST Tree**: Collapsible tree view showing decoded structure
 - **Interactive Highlighting**: Selecting a node in the tree highlights corresponding bytes in the hex view (and vice versa)
