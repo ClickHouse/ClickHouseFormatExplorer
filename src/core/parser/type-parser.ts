@@ -177,17 +177,29 @@ export function parseType(typeString: string): ClickHouseType {
       }
 
       case 'JSON': {
-        // Parse typed paths: JSON(path1 Type1, path2 Type2, ...)
+        // Parse JSON type with optional parameters and typed paths:
+        // JSON(max_dynamic_paths=N, path1 Type1, path2 Type2, ...)
         const typedPaths = new Map<string, ClickHouseType>();
+        let maxDynamicPaths: number | undefined;
 
         while (peek()?.type !== 'RPAREN') {
-          // Path name (could be backtick-quoted like `a.b`)
-          const pathToken = expect('IDENTIFIER') as { type: 'IDENTIFIER'; value: string };
-          const path = pathToken.value;
+          // Identifier (could be a parameter name or path name)
+          const identToken = expect('IDENTIFIER') as { type: 'IDENTIFIER'; value: string };
+          const ident = identToken.value;
 
-          // Type for this path
-          const pathType = parseTypeExpr();
-          typedPaths.set(path, pathType);
+          // Check if this is a parameter assignment (identifier=value)
+          if (peek()?.type === 'EQUALS') {
+            consume(); // consume '='
+            const valueToken = expect('NUMBER') as { type: 'NUMBER'; value: number };
+            if (ident === 'max_dynamic_paths') {
+              maxDynamicPaths = valueToken.value;
+            }
+            // Skip unknown parameters silently
+          } else {
+            // This is a typed path: path Type
+            const pathType = parseTypeExpr();
+            typedPaths.set(ident, pathType);
+          }
 
           if (peek()?.type === 'COMMA') {
             consume();
@@ -195,7 +207,11 @@ export function parseType(typeString: string): ClickHouseType {
         }
         consume(); // RPAREN
 
-        return { kind: 'JSON', typedPaths: typedPaths.size > 0 ? typedPaths : undefined };
+        return {
+          kind: 'JSON',
+          typedPaths: typedPaths.size > 0 ? typedPaths : undefined,
+          maxDynamicPaths,
+        };
       }
 
       case 'Nested': {

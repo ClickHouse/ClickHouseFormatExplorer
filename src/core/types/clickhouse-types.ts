@@ -52,7 +52,7 @@ export type ClickHouseType =
   // Advanced
   | { kind: 'Variant'; variants: ClickHouseType[] }
   | { kind: 'Dynamic'; maxTypes?: number }
-  | { kind: 'JSON'; typedPaths?: Map<string, ClickHouseType> }
+  | { kind: 'JSON'; typedPaths?: Map<string, ClickHouseType>; maxDynamicPaths?: number }
   // Geo
   | { kind: 'Point' }
   | { kind: 'Ring' }
@@ -162,9 +162,19 @@ export function typeToString(type: ClickHouseType): string {
     case 'Dynamic':
       return type.maxTypes ? `Dynamic(${type.maxTypes})` : 'Dynamic';
 
-    case 'JSON':
-      // Simplified - doesn't show typed paths
-      return 'JSON';
+    case 'JSON': {
+      // Include params if present
+      const params: string[] = [];
+      if (type.maxDynamicPaths !== undefined) {
+        params.push(`max_dynamic_paths=${type.maxDynamicPaths}`);
+      }
+      if (type.typedPaths) {
+        for (const [path, pathType] of type.typedPaths) {
+          params.push(`${path} ${typeToString(pathType)}`);
+        }
+      }
+      return params.length > 0 ? `JSON(${params.join(', ')})` : 'JSON';
+    }
 
     case 'Nested': {
       const fields = type.fields.map((f) => `${f.name} ${typeToString(f.type)}`);
