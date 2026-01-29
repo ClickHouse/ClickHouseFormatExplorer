@@ -928,13 +928,23 @@ export class NativeDecoder extends FormatDecoder {
   private decodeArrayColumn(elementType: ClickHouseType, rowCount: number): AstNode[] {
     const typeStr = `Array(${typeToString(elementType)})`;
 
-    // Read cumulative offsets
-    const offsetsStart = this.reader.offset;
+    // Read cumulative offsets with AST nodes
+    const offsetNodes: AstNode[] = [];
     const offsets: bigint[] = [];
     for (let i = 0; i < rowCount; i++) {
+      const start = this.reader.offset;
       const { value } = this.reader.readUInt64LE();
       offsets.push(value);
+      offsetNodes.push({
+        id: this.generateId(),
+        type: 'UInt64',
+        byteRange: { start, end: this.reader.offset },
+        value,
+        displayValue: String(value),
+        label: 'offset',
+      });
     }
+    const offsetsEnd = this.reader.offset;
 
     // Calculate total elements and individual array sizes
     const totalElements = rowCount > 0 ? Number(offsets[rowCount - 1]) : 0;
@@ -962,14 +972,24 @@ export class NativeDecoder extends FormatDecoder {
         el.label = `[${j}]`;
       });
 
+      // Create length node showing the computed size from offset difference
+      const lengthNode: AstNode = {
+        id: this.generateId(),
+        type: 'UInt64',
+        byteRange: offsetNodes[i].byteRange,
+        value: BigInt(size),
+        displayValue: `${size} (cumulative: ${offsets[i]})`,
+        label: 'length',
+      };
+
       values.push({
         id: this.generateId(),
         type: typeStr,
-        byteRange: { start: offsetsStart + i * 8, end: elementsEnd },
+        byteRange: { start: offsetNodes[i].byteRange.start, end: elementsEnd },
         value: arrayElements.map(e => e.value),
         displayValue: `[${arrayElements.map(e => e.displayValue).join(', ')}]`,
         label: `[${i}]`,
-        children: arrayElements,
+        children: [lengthNode, ...arrayElements],
         metadata: { size },
       });
     }
@@ -1656,7 +1676,16 @@ export class NativeDecoder extends FormatDecoder {
     const startOffset = this.reader.offset;
     const values: AstNode[] = [];
 
-    // Read max_dynamic_paths (UInt64) with AST node
+    // Get JSON type info
+    const jsonType = type as { kind: 'JSON'; typedPaths?: Map<string, ClickHouseType>; maxDynamicPaths?: number };
+    const typedSubColumns = jsonType.typedPaths;
+
+    // Always use the V1 format decoder - it handles all JSON types correctly
+    // The format is: version + max_dynamic_paths + num_dynamic_paths + path_names +
+    //                dynamic_structures + typed_path_data + dynamic_data + shared_offsets
+    return this.decodeJSONColumnV1(type, rowCount, startOffset);
+
+    // Legacy format: reads version as max_dynamic_paths (coincidentally works when version=0)
     const maxDynPathsNode = this.decodeUInt64();
     maxDynPathsNode.label = 'max_dynamic_paths';
 
@@ -1671,10 +1700,6 @@ export class NativeDecoder extends FormatDecoder {
       displayValue: String(typedPathsCount),
       label: 'typed_paths_count',
     };
-
-    // Get typed sub-columns from JSON type
-    const jsonType = type as { kind: 'JSON'; typedPaths?: Map<string, ClickHouseType> };
-    const typedSubColumns = jsonType.typedPaths;
 
     // Handle JSON with no dynamic paths
     if (typedPathsCount === 0) {
@@ -1942,6 +1967,334 @@ export class NativeDecoder extends FormatDecoder {
       children.push(sharedOffsetNodes[row]);
 
       const totalPaths = typedPathNodes.size + dynamicPathData.length;
+      values.push({
+        id: this.generateId(),
+        type: 'JSON',
+        byteRange: { start: startOffset, end: this.reader.offset },
+        value: jsonValue,
+        displayValue: `{${totalPaths} paths}`,
+        label: `[${row}]`,
+        children,
+      });
+    }
+
+    return values;
+  }
+
+  /**
+   * Decode JSON column using V1 format (version=0)
+   * This is the spec-compliant format used when JSON has explicit max_dynamic_paths.
+   *
+   * Format:
+   * 1. Version (UInt64) = 0
+   * 2. max_dynamic_paths (VarUInt)
+   * 3. num_dynamic_paths (VarUInt)
+   * 4. Sorted path names (String for each)
+   * 5. ALL Dynamic structures first (one per dynamic path)
+   * 6. ALL Dynamic data (discriminator + values for each path, sequentially)
+   * 7. Shared data offsets (UInt64 per row, cumulative)
+   * 8. Shared data entries (path name + binary-encoded value)
+   */
+  private decodeJSONColumnV1(type: ClickHouseType, rowCount: number, startOffset: number): AstNode[] {
+    const values: AstNode[] = [];
+    const structureChildren: AstNode[] = [];
+
+    const jsonType = type as { kind: 'JSON'; typedPaths?: Map<string, ClickHouseType> };
+    const typedSubColumns = jsonType.typedPaths;
+
+    // 1. Read version (UInt64)
+    const versionNode = this.decodeUInt64();
+    versionNode.label = 'version';
+    structureChildren.push(versionNode);
+
+    // 2. Read max_dynamic_paths (VarUInt)
+    const maxDynPathsStart = this.reader.offset;
+    const { value: maxDynamicPaths } = decodeLEB128(this.reader);
+    const maxDynPathsNode: AstNode = {
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: maxDynPathsStart, end: this.reader.offset },
+      value: maxDynamicPaths,
+      displayValue: String(maxDynamicPaths),
+      label: 'max_dynamic_paths',
+    };
+    structureChildren.push(maxDynPathsNode);
+
+    // 3. Read num_dynamic_paths (VarUInt)
+    const numDynPathsStart = this.reader.offset;
+    const { value: numDynamicPaths } = decodeLEB128(this.reader);
+    const numDynPathsNode: AstNode = {
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: numDynPathsStart, end: this.reader.offset },
+      value: numDynamicPaths,
+      displayValue: String(numDynamicPaths),
+      label: 'num_dynamic_paths',
+    };
+    structureChildren.push(numDynPathsNode);
+
+    // 4. Read sorted dynamic path names
+    const dynamicPathNames: string[] = [];
+    for (let i = 0; i < numDynamicPaths; i++) {
+      const pathNode = this.decodeString();
+      pathNode.label = `dynamic_path[${i}]`;
+      structureChildren.push(pathNode);
+      dynamicPathNames.push(pathNode.value as string);
+    }
+
+    // 5. Read ALL Dynamic structures first (one per dynamic path)
+    // Store structure info for each path to use when reading data
+    // Discriminators are assigned based on alphabetically sorted [typeNames + "SharedVariant"]
+    interface DynamicPathStructure {
+      typeNames: string[];
+      variants: ClickHouseType[];
+      numTypes: number;
+      // Maps discriminator value -> index in variants array (-1 for SharedVariant)
+      discToTypeIndex: Map<number, number>;
+    }
+    const dynamicStructures: DynamicPathStructure[] = [];
+
+    for (let i = 0; i < numDynamicPaths; i++) {
+      // Read Dynamic version
+      const { value: _dynVersion } = this.reader.readUInt64LE();
+
+      // Read max_dynamic_types
+      const { value: _maxTypes } = decodeLEB128(this.reader);
+
+      // Read num_dynamic_types
+      const { value: numTypes } = decodeLEB128(this.reader);
+
+      // Read type names
+      const typeNames: string[] = [];
+      for (let t = 0; t < numTypes; t++) {
+        const { value: len } = decodeLEB128(this.reader);
+        const { value: bytes } = this.reader.readBytes(len);
+        typeNames.push(new TextDecoder().decode(bytes));
+      }
+      const variants = typeNames.map(name => parseType(name));
+
+      // Read variant mode
+      const { value: _mode } = this.reader.readUInt64LE();
+
+      // Build discriminator mapping based on alphabetical sort of [typeNames + "SharedVariant"]
+      const sortedWithShared = [...typeNames, 'SharedVariant'].sort();
+      const discToTypeIndex = new Map<number, number>();
+      for (let idx = 0; idx < sortedWithShared.length; idx++) {
+        const name = sortedWithShared[idx];
+        if (name === 'SharedVariant') {
+          discToTypeIndex.set(idx, -1); // -1 indicates SharedVariant
+        } else {
+          const originalIndex = typeNames.indexOf(name);
+          discToTypeIndex.set(idx, originalIndex);
+        }
+      }
+
+      dynamicStructures.push({ typeNames, variants, numTypes, discToTypeIndex });
+    }
+
+    // 6. Read typed paths data (if any) - comes AFTER dynamic structures, BEFORE dynamic data
+    const typedPathData: Map<string, AstNode[]> = new Map();
+    if (typedSubColumns && typedSubColumns.size > 0) {
+      const sortedTypedPaths = Array.from(typedSubColumns.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+      for (const [pathName, pathType] of sortedTypedPaths) {
+        const nodes = this.decodeColumnData(pathType, rowCount);
+        typedPathData.set(pathName, nodes);
+      }
+    }
+
+    // 7. Read ALL Dynamic data (discriminator + values for each path, sequentially)
+    // Discriminators are assigned based on alphabetical sort of [typeNames + "SharedVariant"]
+    // 255 (0xFF) is the special NULL discriminator
+    const dynamicPathData: AstNode[][] = [];
+
+    for (let i = 0; i < numDynamicPaths; i++) {
+      const { typeNames, variants, numTypes, discToTypeIndex } = dynamicStructures[i];
+
+      // Build reverse mapping: discriminator -> type name for display
+      const discToTypeName = new Map<number, string>();
+      const sortedWithShared = [...typeNames, 'SharedVariant'].sort();
+      for (let idx = 0; idx < sortedWithShared.length; idx++) {
+        discToTypeName.set(idx, sortedWithShared[idx]);
+      }
+
+      // Read discriminators for all rows (with byte tracking)
+      const discriminators: { value: number; range: { start: number; end: number } }[] = [];
+      for (let r = 0; r < rowCount; r++) {
+        const start = this.reader.offset;
+        const { value: disc } = this.reader.readUInt8();
+        discriminators.push({ value: disc, range: { start, end: this.reader.offset } });
+      }
+
+      // Count values per variant using the alphabetical discriminator mapping
+      const countPerVariant: number[] = new Array(numTypes).fill(0);
+      for (const { value: disc } of discriminators) {
+        if (disc === 255) continue; // NULL
+        const typeIdx = discToTypeIndex.get(disc);
+        if (typeIdx !== undefined && typeIdx >= 0) {
+          countPerVariant[typeIdx]++;
+        }
+        // typeIdx === -1 means SharedVariant, handled separately
+      }
+
+      // Read data for each type (in original order, not sorted order)
+      const variantData: AstNode[][] = [];
+      for (let v = 0; v < numTypes; v++) {
+        const count = countPerVariant[v];
+        if (count > 0) {
+          variantData[v] = this.decodeColumnData(variants[v], count);
+        } else {
+          variantData[v] = [];
+        }
+      }
+
+      // Build values for this path
+      const variantPositions: number[] = new Array(numTypes).fill(0);
+      const pathValues: AstNode[] = [];
+      for (let r = 0; r < rowCount; r++) {
+        const { value: disc, range: discRange } = discriminators[r];
+        const typeName = disc === 255 ? 'NULL' : (discToTypeName.get(disc) ?? `Unknown(${disc})`);
+
+        // Create discriminator AST node
+        const discNode: AstNode = {
+          id: this.generateId(),
+          type: 'UInt8',
+          byteRange: discRange,
+          value: disc,
+          displayValue: `${disc} → ${typeName}`,
+          label: 'discriminator',
+        };
+
+        if (disc === 255) {
+          // NULL discriminator
+          pathValues.push({
+            id: this.generateId(),
+            type: 'Dynamic(NULL)',
+            byteRange: discRange,
+            value: null,
+            displayValue: 'NULL',
+            children: [discNode],
+          });
+        } else {
+          const typeIdx = discToTypeIndex.get(disc);
+          if (typeIdx !== undefined && typeIdx >= 0) {
+            // Valid type
+            const node = variantData[typeIdx][variantPositions[typeIdx]++];
+            pathValues.push({
+              id: this.generateId(),
+              type: `Dynamic(${node.type})`,
+              byteRange: { start: discRange.start, end: node.byteRange.end },
+              value: node.value,
+              displayValue: node.displayValue,
+              children: [discNode, node],
+            });
+          } else if (typeIdx === -1) {
+            // SharedVariant - value is in shared data section
+            pathValues.push({
+              id: this.generateId(),
+              type: 'Dynamic(SharedVariant)',
+              byteRange: discRange,
+              value: null,
+              displayValue: 'SharedVariant',
+              children: [discNode],
+            });
+          } else {
+            // Unknown discriminator
+            pathValues.push({
+              id: this.generateId(),
+              type: 'Dynamic(Unknown)',
+              byteRange: discRange,
+              value: null,
+              displayValue: `Unknown(disc=${disc})`,
+              children: [discNode],
+            });
+          }
+        }
+      }
+      dynamicPathData.push(pathValues);
+    }
+
+    // 6. Read shared data offsets (cumulative entry counts, UInt64 per row)
+    const sharedOffsets: bigint[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const offsetNode = this.decodeUInt64();
+      sharedOffsets.push(offsetNode.value as bigint);
+    }
+    const totalSharedEntries = rowCount > 0 ? Number(sharedOffsets[rowCount - 1]) : 0;
+
+    // 7. Read shared data entries
+    const sharedDataEntries: Array<{ path: string; value: unknown }> = [];
+    for (let i = 0; i < totalSharedEntries; i++) {
+      // Read path name
+      const pathNode = this.decodeString();
+      const path = pathNode.value as string;
+
+      // Read binary-encoded value: size (VarUInt) + type_index (VarUInt) + value
+      const { value: _dataSize } = decodeLEB128(this.reader);
+      const { value: typeIndex } = decodeLEB128(this.reader);
+      const entryType = this.decodeDynamicBinaryType(typeIndex);
+
+      let value: unknown = null;
+      if (entryType) {
+        const valueNodes = this.decodeColumnData(entryType, 1);
+        value = valueNodes[0]?.value;
+      }
+
+      sharedDataEntries.push({ path, value });
+    }
+
+    // Map shared entries to rows
+    const sharedDataPerRow: Array<Array<{ path: string; value: unknown }>> = [];
+    let prevOffset = 0n;
+    for (let i = 0; i < rowCount; i++) {
+      const currentOffset = sharedOffsets[i];
+      const entriesForRow = sharedDataEntries.slice(Number(prevOffset), Number(currentOffset));
+      sharedDataPerRow.push(entriesForRow);
+      prevOffset = currentOffset;
+    }
+
+    // Build result nodes
+    for (let row = 0; row < rowCount; row++) {
+      const children: AstNode[] = [...structureChildren];
+      const jsonValue: Record<string, unknown> = {};
+
+      // Add typed path values
+      for (const [pathName, nodes] of typedPathData) {
+        const valueNode = nodes[row];
+        this.setNestedValue(jsonValue, pathName, valueNode.value);
+        children.push({
+          id: this.generateId(),
+          type: 'JSON.typed_path',
+          byteRange: valueNode.byteRange,
+          value: { [pathName]: valueNode.value },
+          displayValue: `${pathName}: ${valueNode.displayValue}`,
+          label: pathName,
+          children: [valueNode],
+        });
+      }
+
+      // Add dynamic path values
+      for (let i = 0; i < numDynamicPaths; i++) {
+        const pathName = dynamicPathNames[i];
+        const dynamicNode = dynamicPathData[i][row];
+        this.setNestedValue(jsonValue, pathName, dynamicNode.value);
+        children.push({
+          id: this.generateId(),
+          type: 'JSON.dynamic_path',
+          byteRange: dynamicNode.byteRange,
+          value: { [pathName]: dynamicNode.value },
+          displayValue: `${pathName}: ${dynamicNode.displayValue}`,
+          label: pathName,
+          children: [dynamicNode],
+        });
+      }
+
+      // Add shared data values for this row
+      const rowSharedEntries = sharedDataPerRow[row] || [];
+      for (const entry of rowSharedEntries) {
+        this.setNestedValue(jsonValue, entry.path, entry.value);
+      }
+
+      const totalPaths = typedPathData.size + numDynamicPaths + rowSharedEntries.length;
       values.push({
         id: this.generateId(),
         type: 'JSON',

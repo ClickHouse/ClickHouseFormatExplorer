@@ -557,24 +557,35 @@ describe('NativeDecoder Integration Tests', () => {
   // ARRAY - Native format: ArraySizes (cumulative UInt64 offsets) FIRST, then elements
   // ============================================================
   describe('Array Type', () => {
+    // Helper to get array elements (skip first child which is the length node)
+    const getElements = (children: AstNode[] | undefined) =>
+      children?.slice(1) ?? [];
+
     it('decodes empty Array', async () => {
       const data = await query("SELECT []::Array(UInt32) as val");
       const result = decode(data, 1, 1);
-      expect(result.blocks![0].columns[0].values[0].children).toHaveLength(0);
+      const children = result.blocks![0].columns[0].values[0].children!;
+      // First child is the length node
+      expect(children[0].label).toBe('length');
+      expect(children[0].value).toBe(0n);
+      expect(getElements(children)).toHaveLength(0);
     });
 
     it('decodes Array of integers', async () => {
       const data = await query("SELECT [1, 2, 3]::Array(UInt32) as val");
       const result = decode(data, 1, 1);
       const children = result.blocks![0].columns[0].values[0].children!;
-      expect(children.map(c => c.value)).toEqual([1, 2, 3]);
+      expect(children[0].label).toBe('length');
+      expect(children[0].value).toBe(3n);
+      expect(getElements(children).map(c => c.value)).toEqual([1, 2, 3]);
     });
 
     it('decodes Array of strings', async () => {
       const data = await query("SELECT ['hello', 'world']::Array(String) as val");
       const result = decode(data, 1, 1);
       const children = result.blocks![0].columns[0].values[0].children!;
-      expect(children.map(c => c.value)).toEqual(['hello', 'world']);
+      expect(children[0].label).toBe('length');
+      expect(getElements(children).map(c => c.value)).toEqual(['hello', 'world']);
     });
 
     it('decodes multiple Arrays with varying sizes (cumulative offsets)', async () => {
@@ -582,31 +593,35 @@ describe('NativeDecoder Integration Tests', () => {
       const data = await query("SELECT arrayJoin([[1, 2], [3], []]::Array(Array(UInt8))) AS val");
       const result = decode(data, 1, 3);
       const arrays = result.blocks!.flatMap(b => b.columns[0].values);
-      expect(arrays[0].children!.map(c => c.value)).toEqual([1, 2]);
-      expect(arrays[1].children!.map(c => c.value)).toEqual([3]);
-      expect(arrays[2].children).toHaveLength(0);
+      expect(arrays[0].children![0].label).toBe('length');
+      expect(getElements(arrays[0].children!).map(c => c.value)).toEqual([1, 2]);
+      expect(getElements(arrays[1].children!).map(c => c.value)).toEqual([3]);
+      expect(getElements(arrays[2].children!)).toHaveLength(0);
     });
 
     it('decodes nested Array', async () => {
       const data = await query("SELECT [[1, 2], [3, 4, 5]]::Array(Array(UInt32)) as val");
       const result = decode(data, 1, 1);
-      const outer = result.blocks![0].columns[0].values[0].children!;
+      const outer = getElements(result.blocks![0].columns[0].values[0].children!);
       expect(outer).toHaveLength(2);
-      expect(outer[0].children!.map(c => c.value)).toEqual([1, 2]);
-      expect(outer[1].children!.map(c => c.value)).toEqual([3, 4, 5]);
+      expect(getElements(outer[0].children!).map(c => c.value)).toEqual([1, 2]);
+      expect(getElements(outer[1].children!).map(c => c.value)).toEqual([3, 4, 5]);
     });
 
     it('decodes Array of Nullable', async () => {
       const data = await query("SELECT [1, NULL, 3]::Array(Nullable(UInt32)) as val");
       const result = decode(data, 1, 1);
-      const children = result.blocks![0].columns[0].values[0].children!;
-      expect(children.map(c => c.value)).toEqual([1, null, 3]);
+      const elements = getElements(result.blocks![0].columns[0].values[0].children!);
+      expect(elements.map(c => c.value)).toEqual([1, null, 3]);
     });
 
     it('decodes large Array', async () => {
       const data = await query("SELECT range(100)::Array(UInt32) as val");
       const result = decode(data, 1, 1);
-      expect(result.blocks![0].columns[0].values[0].children).toHaveLength(100);
+      const children = result.blocks![0].columns[0].values[0].children!;
+      expect(children[0].label).toBe('length');
+      expect(children[0].value).toBe(100n);
+      expect(getElements(children)).toHaveLength(100);
     });
   });
 
@@ -956,26 +971,22 @@ describe('NativeDecoder Integration Tests', () => {
       expect(jsonNode.children).toBeDefined();
       expect(jsonNode.displayValue).toBe('{1 paths}');
 
-      // Find structural elements
+      // Find structural elements (V1 format uses VarUInt for max_dynamic_paths)
+      const version = jsonNode.children!.find(c => c.label === 'version');
+      expect(version).toBeDefined();
+      expect(version!.type).toBe('UInt64');
+      expect(version!.value).toBe(0n);
+
       const maxDynPaths = jsonNode.children!.find(c => c.label === 'max_dynamic_paths');
       expect(maxDynPaths).toBeDefined();
-      expect(maxDynPaths!.type).toBe('UInt64');
-      expect(maxDynPaths!.value).toBe(0n);
+      expect(maxDynPaths!.type).toBe('VarUInt');
 
-      const typedPathsCount = jsonNode.children!.find(c => c.label === 'typed_paths_count');
-      expect(typedPathsCount).toBeDefined();
-      expect(typedPathsCount!.value).toBe(0);
+      const numDynPaths = jsonNode.children!.find(c => c.label === 'num_dynamic_paths');
+      expect(numDynPaths).toBeDefined();
+      expect(numDynPaths!.type).toBe('VarUInt');
 
-      const objectPresent = jsonNode.children!.find(c => c.label === 'object_present');
-      expect(objectPresent).toBeDefined();
-      expect(objectPresent!.type).toBe('UInt8');
-
-      const sharedOffset = jsonNode.children!.find(c => c.label?.startsWith('shared_data_offset'));
-      expect(sharedOffset).toBeDefined();
-      expect(sharedOffset!.type).toBe('UInt64');
-
-      // Find the "JSON path" node for "ip"
-      const pathNode = jsonNode.children!.find(c => c.type === 'JSON path' && c.label === 'ip');
+      // Find the typed path node for "ip"
+      const pathNode = jsonNode.children!.find(c => c.type === 'JSON.typed_path' && c.label === 'ip');
       expect(pathNode).toBeDefined();
       expect(pathNode!.displayValue).toContain('ip:');
 
@@ -1054,6 +1065,50 @@ describe('NativeDecoder Integration Tests', () => {
       const fullyTyped = result.blocks![0].columns[3].values[0].value as Record<string, unknown>;
       expect(fullyTyped.id).toBe(1n);
       expect(fullyTyped.a).toBe(0); // Default value for Int32
+    });
+
+    it('decodes JSON with typed and dynamic paths across 100 rows', async () => {
+      const data = await query(`
+        SELECT
+          '{"a": 42, "b": { "c" : "stringvalue" }}'::JSON(a Int32) as json
+        FROM system.numbers LIMIT 100
+      `, jsonSettings);
+      const result = decode(data, 1, 100);
+
+      // Should have 100 rows
+      expect(result.blocks![0].columns[0].values.length).toBe(100);
+
+      // Check first row
+      const firstRow = result.blocks![0].columns[0].values[0].value as Record<string, unknown>;
+      expect(firstRow.a).toBe(42);
+      expect((firstRow.b as Record<string, unknown>).c).toBe('stringvalue');
+
+      // Check last row
+      const lastRow = result.blocks![0].columns[0].values[99].value as Record<string, unknown>;
+      expect(lastRow.a).toBe(42);
+      expect((lastRow.b as Record<string, unknown>).c).toBe('stringvalue');
+    });
+
+    it('decodes JSON with exceeded max_dynamic_paths (shared data)', async () => {
+      // With max_dynamic_paths=2 and 3 paths in JSON:
+      // - "a" and "b" become dynamic paths
+      // - "c" overflows to shared data
+      const data = await query(`
+        SELECT '{"a": 1, "b": 2, "c": 3}'::JSON(max_dynamic_paths=2) AS col
+      `, jsonSettings);
+      const result = decode(data, 1, 1);
+
+      // Should decode the JSON with all 3 paths
+      const jsonValue = result.blocks![0].columns[0].values[0].value as Record<string, unknown>;
+      expect(jsonValue).toBeDefined();
+
+      // Dynamic paths "a" and "b" should be present
+      expect(jsonValue.a).toBe(1n);
+      expect(jsonValue.b).toBe(2n);
+
+      // Overflow path "c" should be in shared data and still accessible
+      // Note: The exact structure may vary, but the value should be retrievable
+      expect(jsonValue.c).toBe(3n);
     });
   });
 
