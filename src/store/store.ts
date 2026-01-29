@@ -29,7 +29,7 @@ interface AppState {
   activeCopyText: string | null;
   hoveredNodeId: string | null;
   expandedNodes: Set<string>;
-  scrollToByteOffset: number | null;
+  scrollRequest: { byteOffset: number; id: number } | null;
 
   // UI actions
   setActiveNode: (id: string | null, copyText?: string | null) => void;
@@ -86,6 +86,38 @@ function getDefaultExpanded(parsedData: ParsedData): Set<string> {
   return expanded;
 }
 
+/** State to clear all data before loading new data */
+const getLoadingState = () => ({
+  isLoading: true,
+  parseError: null,
+  queryTiming: null,
+  rawData: null,
+  parsedData: null,
+  activeNodeId: null,
+  activeCopyText: null,
+  hoveredNodeId: null,
+  expandedNodes: new Set<string>(),
+  scrollRequest: null,
+});
+
+/** State after successful data load */
+const getSuccessState = (data: Uint8Array, parsed: ParsedData, timing: number | null) => ({
+  rawData: data,
+  parsedData: parsed,
+  isLoading: false,
+  parseError: null,
+  queryTiming: timing,
+  expandedNodes: getDefaultExpanded(parsed),
+});
+
+/** State after failed data load */
+const getErrorState = (error: Error) => ({
+  parseError: error,
+  isLoading: false,
+  rawData: null,
+  parsedData: null,
+});
+
 export const useStore = create<AppState>((set, get) => ({
   // Initial state
   query: DEFAULT_QUERY,
@@ -99,70 +131,39 @@ export const useStore = create<AppState>((set, get) => ({
   activeCopyText: null,
   hoveredNodeId: null,
   expandedNodes: new Set(),
-  scrollToByteOffset: null,
+  scrollRequest: null,
 
   setQuery: (query) => set({ query }),
   setFormat: (format) => set({ format }),
 
   executeQuery: async () => {
     const { query, format } = get();
-    set({ isLoading: true, parseError: null, queryTiming: null });
+    set(getLoadingState());
 
     try {
       const { data, timing } = await clickhouse.query({ query, format });
-
       const decoder = createDecoder(data, format);
       const parsed = decoder.decode();
-
-      set({
-        rawData: data,
-        parsedData: parsed,
-        isLoading: false,
-        queryTiming: timing,
-        expandedNodes: getDefaultExpanded(parsed),
-        activeNodeId: null,
-        activeCopyText: null,
-        hoveredNodeId: null,
-      });
+      set(getSuccessState(data, parsed, timing));
     } catch (error) {
-      set({
-        parseError: error as Error,
-        isLoading: false,
-        rawData: null,
-        parsedData: null,
-      });
+      console.error('Query execution failed:', error);
+      set(getErrorState(error as Error));
     }
   },
 
   loadFile: async (file: File) => {
     const { format } = get();
-    set({ isLoading: true, parseError: null, queryTiming: null });
+    set(getLoadingState());
 
     try {
       const arrayBuffer = await file.arrayBuffer();
       const data = new Uint8Array(arrayBuffer);
-
       const decoder = createDecoder(data, format);
       const parsed = decoder.decode();
-
-      set({
-        rawData: data,
-        parsedData: parsed,
-        isLoading: false,
-        parseError: null,
-        queryTiming: null,
-        expandedNodes: getDefaultExpanded(parsed),
-        activeNodeId: null,
-        activeCopyText: null,
-        hoveredNodeId: null,
-      });
+      set(getSuccessState(data, parsed, null));
     } catch (error) {
-      set({
-        parseError: error as Error,
-        isLoading: false,
-        rawData: null,
-        parsedData: null,
-      });
+      console.error('File load failed:', error);
+      set(getErrorState(error as Error));
     }
   },
 
@@ -189,6 +190,9 @@ export const useStore = create<AppState>((set, get) => ({
 
   collapseAll: () => set({ expandedNodes: new Set() }),
 
-  scrollToHex: (byteOffset) => set({ scrollToByteOffset: byteOffset }),
-  clearScrollTarget: () => set({ scrollToByteOffset: null }),
+  scrollToHex: (byteOffset) => {
+    // Use a unique ID for each scroll request to ensure the effect always fires
+    set({ scrollRequest: { byteOffset, id: Date.now() } });
+  },
+  clearScrollTarget: () => set({ scrollRequest: null }),
 }));

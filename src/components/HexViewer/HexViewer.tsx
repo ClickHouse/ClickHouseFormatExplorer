@@ -331,19 +331,21 @@ export function HexViewer() {
   const activeNodeId = useStore((s) => s.activeNodeId);
   const hoveredNodeId = useStore((s) => s.hoveredNodeId);
   const setActiveNode = useStore((s) => s.setActiveNode);
-  const scrollToByteOffset = useStore((s) => s.scrollToByteOffset);
+  const scrollRequest = useStore((s) => s.scrollRequest);
   const clearScrollTarget = useStore((s) => s.clearScrollTarget);
 
   const listRef = useRef<FixedSizeList>(null);
+  const lastScrollId = useRef<number | null>(null);
 
   // Scroll to byte offset when requested
   useEffect(() => {
-    if (scrollToByteOffset !== null && listRef.current) {
-      const rowIndex = Math.floor(scrollToByteOffset / BYTES_PER_ROW);
+    if (scrollRequest && listRef.current && scrollRequest.id !== lastScrollId.current) {
+      lastScrollId.current = scrollRequest.id;
+      const rowIndex = Math.floor(scrollRequest.byteOffset / BYTES_PER_ROW);
       listRef.current.scrollToItem(rowIndex, 'center');
       clearScrollTarget();
     }
-  }, [scrollToByteOffset, clearScrollTarget]);
+  }, [scrollRequest, clearScrollTarget]);
 
   const highlightMap = useMemo(
     () => buildHighlightMap(parsedData, activeNodeId, hoveredNodeId),
