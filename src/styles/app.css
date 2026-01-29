@@ -149,6 +149,11 @@
   cursor: pointer;
 }
 
+.query-format-select option {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
 .query-format-select:hover:not(:disabled) {
   border-color: var(--accent-color);
   background: var(--accent-color-bg);
