@@ -25,6 +25,10 @@ export class BinaryReader {
     return this.bytes.length;
   }
 
+  peekBytes(count: number): Uint8Array {
+    return this.bytes.slice(this.pos, Math.min(this.pos + count, this.bytes.length));
+  }
+
   private makeRange(start: number): ByteRange {
     return { start, end: this.pos };
   }
@@ -162,11 +166,6 @@ export class BinaryReader {
     const value = this.bytes.slice(this.pos, this.pos + length);
     this.pos += length;
     return { value, range: this.makeRange(start) };
-  }
-
-  // Peek at bytes without advancing
-  peekBytes(length: number): Uint8Array {
-    return this.bytes.slice(this.pos, this.pos + length);
   }
 
   // Skip bytes
