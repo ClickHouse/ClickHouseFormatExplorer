@@ -2225,7 +2225,7 @@ Similar to `Dynamic`, `JSON` uses multiple streams:
 **V3 (version = 4):**
 - Like V2 with binary type encoding and optional statistics flag
 
-> **Note:** Version numbers are not sequential. V1=1, V2=2, V3=4. There is no version 3.
+> **Note:** Version numbers are not sequential. V1=0, V2=2, V3=4. There is no version 3.
 
 **STRING (version = 1):**
 - Special mode for Native format only
@@ -2337,6 +2337,246 @@ const block = new Uint8Array([
 ```
 
 Note: Each dynamic path is stored as a `Dynamic` column, so it includes the full `Dynamic` serialization (structure + variant data).
+
+**Example: JSON with typed and dynamic paths**
+
+This example demonstrates a `JSON` column with both a **typed path** (declared type) and a **dynamic path** (inferred type). Typed paths are serialized directly using their native format, while dynamic paths are wrapped in `Dynamic` serialization.
+
+```bash
+curl -s -XPOST "http://localhost:8123?default_format=Native&allow_experimental_json_type=1" \
+  --data-binary "SELECT '{\"a\": 42, \"b\": \"hi\"}'::JSON(a UInt32) AS col" | xxd
+```
+
+```
+00000000: 0101 0363 6f6c 0e4a 534f 4e28 6120 5549  ...col.JSON(a UI
+00000010: 6e74 3332 2900 0000 0000 0000 0001 0101  nt32)...........
+00000020: 6201 0000 0000 0000 0001 0106 5374 7269  b...........Stri
+00000030: 6e67 0000 0000 0000 0000 2a00 0000 0102  ng........*.....
+00000040: 6869 0000 0000 0000 0000                 hi........
+```
+
+Full breakdown:
+```typescript
+const block = new Uint8Array([
+  // ═══════════════════════════════════════════════════════════════════
+  // BLOCK HEADER
+  // ═══════════════════════════════════════════════════════════════════
+  0x01,                                    // NumColumns = 1 (VarUInt)
+  0x01,                                    // NumRows = 1 (VarUInt)
+
+  // ═══════════════════════════════════════════════════════════════════
+  // COLUMN HEADER
+  // ═══════════════════════════════════════════════════════════════════
+  0x03, 0x63, 0x6f, 0x6c,                  // Column name = "col" (len=3)
+  0x0e,                                    // Type name length = 14
+  0x4a, 0x53, 0x4f, 0x4e, 0x28, 0x61,     // "JSON(a UInt32)"
+  0x20, 0x55, 0x49, 0x6e, 0x74, 0x33,     //   - typed path "a" with type UInt32
+  0x32, 0x29,                              //   - typed paths are part of the type name
+
+  // ═══════════════════════════════════════════════════════════════════
+  // OBJECT STRUCTURE STREAM (prefix for JSON column)
+  // ═══════════════════════════════════════════════════════════════════
+  0x00, 0x00, 0x00, 0x00,                  // Version = 0 (V1 serialization)
+  0x00, 0x00, 0x00, 0x00,                  //   (UInt64 little-endian)
+
+  // V1 structure metadata:
+  0x01,                                    // max_dynamic_paths = 1 (VarUInt)
+  0x01,                                    // num_dynamic_paths = 1 (VarUInt)
+
+  // Sorted list of dynamic path names:
+  0x01, 0x62,                              // Path 0: "b" (len=1, then "b")
+                                           //   - typed path "a" is NOT listed here
+                                           //   - only runtime-discovered paths appear
+
+  // Statistics (PREFIX mode):
+  0x01,                                    // Path "b" non-null count = 1 (VarUInt)
+  0x00,                                    // Shared data statistics: 0 entries (VarUInt)
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DYNAMIC STRUCTURE STREAM (prefix for dynamic path "b")
+  // ═══════════════════════════════════════════════════════════════════
+  0x00, 0x00, 0x00, 0x00,                  // Dynamic version = 0 (V1)
+  0x00, 0x00, 0x00, 0x00,                  //   (UInt64 little-endian)
+
+  // V1 Dynamic structure:
+  0x01,                                    // max_dynamic_types = 1 (VarUInt)
+  0x01,                                    // num_dynamic_types = 1 (VarUInt)
+
+  // Type names (not SharedVariant, which is implicit):
+  0x06, 0x53, 0x74, 0x72, 0x69,           // Type 0: "String" (len=6)
+  0x6e, 0x67,
+
+  // Dynamic statistics (for [String, SharedVariant]):
+  0x00,                                    // String variant row count = 0 (placeholder)
+  0x00,                                    // SharedVariant row count = 0 (placeholder)
+  0x00,                                    // Shared variant statistics: 0 entries
+
+  // ═══════════════════════════════════════════════════════════════════
+  // VARIANT STRUCTURE STREAM (prefix for Dynamic's Variant)
+  // ═══════════════════════════════════════════════════════════════════
+  0x00, 0x00, 0x00, 0x00,                  // Variant mode = 0 (COMPACT)
+  0x00, 0x00, 0x00, 0x00,                  //   (UInt64 little-endian)
+
+  // ═══════════════════════════════════════════════════════════════════
+  // OBJECT DATA STREAM
+  // ═══════════════════════════════════════════════════════════════════
+
+  // --- TYPED PATH "a" (UInt32) ---
+  // Serialized directly using UInt32's native format (no Dynamic wrapper!)
+  0x2a, 0x00, 0x00, 0x00,                  // value = 42 (UInt32 little-endian)
+
+  // --- DYNAMIC PATH "b" (as Dynamic -> Variant) ---
+  // Variant discriminator column (1 row):
+  0x01,                                    // Row 0: discriminator = 1 (String variant)
+                                           //   0 = NULL, 1 = String, 2 = SharedVariant
+
+  // String variant data:
+  0x02, 0x68, 0x69,                        // value = "hi" (len=2, then "hi")
+
+  // ═══════════════════════════════════════════════════════════════════
+  // SHARED DATA STREAM (overflow paths, empty in this case)
+  // ═══════════════════════════════════════════════════════════════════
+  // Shared data is Array(Tuple(path: String, value: String))
+  // For 1 row with 0 shared paths:
+  0x00, 0x00, 0x00, 0x00,                  // Array offsets: [0] (UInt64)
+  0x00, 0x00, 0x00, 0x00,                  //   - row 0 has 0 elements
+]);
+```
+
+**Key observations:**
+
+1. **Typed path "a"** (UInt32):
+   - Declared in type definition: `JSON(a UInt32)`
+   - Type name includes the typed path specification
+   - NOT listed in the dynamic paths list
+   - Serialized directly as UInt32 (4 bytes, little-endian): `2a 00 00 00` = 42
+   - No `Dynamic` wrapper overhead
+
+2. **Dynamic path "b"** (inferred as String):
+   - Discovered at runtime from the JSON data
+   - Listed in the dynamic paths list in ObjectStructure
+   - Serialized as a full `Dynamic` column:
+     - DynamicStructure: version, types list, statistics
+     - VariantStructure: mode
+     - VariantData: discriminators + type-specific data
+
+3. **Serialization order in ObjectData**:
+   - Typed paths first (sorted alphabetically by path name)
+   - Dynamic paths second (sorted alphabetically by path name)
+   - Shared data last
+
+4. **Space efficiency**: Typed paths save significant space by avoiding the `Dynamic` overhead. For path "a", we use 4 bytes (UInt32) instead of ~20+ bytes (Dynamic structure + Variant + value).
+
+**Example: JSON with typed and dynamic paths (multiple rows)**
+
+This example shows the same structure with 2 rows, demonstrating how column data is laid out contiguously for each path.
+
+```bash
+curl -s -XPOST "http://localhost:8123?default_format=Native&allow_experimental_json_type=1" \
+  --data-binary "SELECT ('{\"a\": ' || toString(number * 10) || ', \"b\": \"row' || toString(number) || '\"}')::JSON(a UInt32) AS col FROM system.numbers LIMIT 2" | xxd
+```
+
+This produces rows: `{"a": 0, "b": "row0"}` and `{"a": 10, "b": "row1"}`.
+
+```
+00000000: 0102 0363 6f6c 0e4a 534f 4e28 6120 5549  ...col.JSON(a UI
+00000010: 6e74 3332 2900 0000 0000 0000 0001 0101  nt32)...........
+00000020: 6201 0000 0000 0000 0001 0106 5374 7269  b...........Stri
+00000030: 6e67 0000 0000 0000 0000 0000 0000 0a00  ng..............
+00000040: 0000 0101 0472 6f77 3004 726f 7731 0000  .....row0.row1..
+00000050: 0000 0000 0000 0000 0000 0000 0000       ..............
+```
+
+Full breakdown:
+```typescript
+const block = new Uint8Array([
+  // ═══════════════════════════════════════════════════════════════════
+  // BLOCK HEADER
+  // ═══════════════════════════════════════════════════════════════════
+  0x01,                                    // NumColumns = 1 (VarUInt)
+  0x02,                                    // NumRows = 2 (VarUInt) <-- 2 rows!
+
+  // ═══════════════════════════════════════════════════════════════════
+  // COLUMN HEADER
+  // ═══════════════════════════════════════════════════════════════════
+  0x03, 0x63, 0x6f, 0x6c,                  // Column name = "col" (len=3)
+  0x0e,                                    // Type name length = 14
+  0x4a, 0x53, 0x4f, 0x4e, 0x28, 0x61,     // "JSON(a UInt32)"
+  0x20, 0x55, 0x49, 0x6e, 0x74, 0x33,
+  0x32, 0x29,
+
+  // ═══════════════════════════════════════════════════════════════════
+  // OBJECT STRUCTURE STREAM
+  // ═══════════════════════════════════════════════════════════════════
+  0x00, 0x00, 0x00, 0x00,                  // Version = 0 (V1 serialization)
+  0x00, 0x00, 0x00, 0x00,
+
+  0x01,                                    // max_dynamic_paths = 1 (VarUInt)
+  0x01,                                    // num_dynamic_paths = 1 (VarUInt)
+  0x01, 0x62,                              // Path 0: "b" (len=1)
+
+  0x01,                                    // Statistics: path "b" non-null count
+  0x00,                                    // Shared data statistics: 0 entries
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DYNAMIC STRUCTURE STREAM (for path "b")
+  // ═══════════════════════════════════════════════════════════════════
+  0x00, 0x00, 0x00, 0x00,                  // Dynamic version = 0 (V1)
+  0x00, 0x00, 0x00, 0x00,
+
+  0x01,                                    // max_dynamic_types = 1 (VarUInt)
+  0x01,                                    // num_dynamic_types = 1 (VarUInt)
+  0x06, 0x53, 0x74, 0x72, 0x69,           // Type 0: "String" (len=6)
+  0x6e, 0x67,
+
+  0x00,                                    // Dynamic statistics (variant counts)
+  0x00,
+  0x00,
+
+  // ═══════════════════════════════════════════════════════════════════
+  // VARIANT STRUCTURE STREAM
+  // ═══════════════════════════════════════════════════════════════════
+  0x00, 0x00, 0x00, 0x00,                  // Variant mode = 0 (COMPACT)
+  0x00, 0x00, 0x00, 0x00,
+
+  // ═══════════════════════════════════════════════════════════════════
+  // OBJECT DATA STREAM
+  // ═══════════════════════════════════════════════════════════════════
+
+  // --- TYPED PATH "a" (UInt32) - ALL ROWS CONTIGUOUS ---
+  0x00, 0x00, 0x00, 0x00,                  // Row 0: a = 0
+  0x0a, 0x00, 0x00, 0x00,                  // Row 1: a = 10
+
+  // --- DYNAMIC PATH "b" - Variant discriminators (ALL ROWS) ---
+  0x01,                                    // Row 0: discriminator = 1 (String)
+  0x01,                                    // Row 1: discriminator = 1 (String)
+
+  // --- DYNAMIC PATH "b" - String variant data (ALL ROWS) ---
+  0x04, 0x72, 0x6f, 0x77, 0x30,           // Row 0: "row0" (len=4)
+  0x04, 0x72, 0x6f, 0x77, 0x31,           // Row 1: "row1" (len=4)
+
+  // ═══════════════════════════════════════════════════════════════════
+  // SHARED DATA STREAM (Array offsets for each row)
+  // ═══════════════════════════════════════════════════════════════════
+  0x00, 0x00, 0x00, 0x00,                  // Row 0 offset: 0 elements
+  0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00,                  // Row 1 offset: 0 elements
+  0x00, 0x00, 0x00, 0x00,
+]);
+```
+
+**Key observations for multi-row data:**
+
+1. **Columnar layout**: All values for each path are stored contiguously:
+   - Typed path "a": `[0, 10]` as two consecutive UInt32 values
+   - Dynamic path "b" discriminators: `[1, 1]` (both rows are String)
+   - Dynamic path "b" String data: `["row0", "row1"]` stored sequentially
+
+2. **No per-row overhead**: The structure metadata (version, paths, types) is written once in the prefix, not repeated for each row. Only the actual data values scale with row count.
+
+3. **Variant discriminators**: For the Dynamic path, discriminators for ALL rows come first, then the actual variant data for all rows. This enables efficient columnar processing.
+
+4. **Shared data offsets**: One UInt64 offset per row indicating how many shared path entries that row has. With 0 shared paths, all offsets are 0.
 
 **Path Naming:**
 
