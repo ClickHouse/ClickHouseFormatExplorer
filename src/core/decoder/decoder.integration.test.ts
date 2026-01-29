@@ -452,49 +452,63 @@ describe('RowBinaryDecoder Integration Tests', () => {
   // ARRAY
   // ============================================================
   describe('Array Type', () => {
+    // Helper to get array elements (skip first child which is the length node)
+    const getElements = (children: typeof result.rows[0]['values'][0]['children']) =>
+      children?.slice(1) ?? [];
+
     it('decodes empty Array', async () => {
       const data = await query("SELECT []::Array(UInt32) as val");
       const result = decode(data, 1, 1);
-      expect(result.rows![0].values[0].children).toHaveLength(0);
+      const children = result.rows![0].values[0].children!;
+      // First child is the length node
+      expect(children[0].label).toBe('length');
+      expect(children[0].value).toBe(0);
+      expect(getElements(children)).toHaveLength(0);
     });
 
     it('decodes Array of integers', async () => {
       const data = await query("SELECT [1, 2, 3]::Array(UInt32) as val");
       const result = decode(data, 1, 1);
       const children = result.rows![0].values[0].children!;
-      expect(children.map(c => c.value)).toEqual([1, 2, 3]);
+      expect(children[0].label).toBe('length');
+      expect(children[0].value).toBe(3);
+      expect(getElements(children).map(c => c.value)).toEqual([1, 2, 3]);
     });
 
     it('decodes Array of strings', async () => {
       const data = await query("SELECT ['hello', 'world']::Array(String) as val");
       const result = decode(data, 1, 1);
       const children = result.rows![0].values[0].children!;
-      expect(children.map(c => c.value)).toEqual(['hello', 'world']);
+      expect(children[0].label).toBe('length');
+      expect(getElements(children).map(c => c.value)).toEqual(['hello', 'world']);
     });
 
     it('decodes nested Array', async () => {
       const data = await query("SELECT [[1, 2], [3, 4, 5]]::Array(Array(UInt32)) as val");
       const result = decode(data, 1, 1);
-      const outer = result.rows![0].values[0].children!;
+      const outer = getElements(result.rows![0].values[0].children!);
       expect(outer).toHaveLength(2);
-      expect(outer[0].children!.map(c => c.value)).toEqual([1, 2]);
-      expect(outer[1].children!.map(c => c.value)).toEqual([3, 4, 5]);
+      expect(getElements(outer[0].children!).map(c => c.value)).toEqual([1, 2]);
+      expect(getElements(outer[1].children!).map(c => c.value)).toEqual([3, 4, 5]);
     });
 
     it('decodes Array of Nullable', async () => {
       const data = await query("SELECT [1, NULL, 3]::Array(Nullable(UInt32)) as val");
       const result = decode(data, 1, 1);
-      const children = result.rows![0].values[0].children!;
+      const elements = getElements(result.rows![0].values[0].children!);
       // Nullable in Array wraps non-null values
-      expect(children[0].children?.[0].value ?? children[0].value).toBe(1);
-      expect(children[1].value).toBeNull();
-      expect(children[2].children?.[0].value ?? children[2].value).toBe(3);
+      expect(elements[0].children?.[0].value ?? elements[0].value).toBe(1);
+      expect(elements[1].value).toBeNull();
+      expect(elements[2].children?.[0].value ?? elements[2].value).toBe(3);
     });
 
     it('decodes large Array', async () => {
       const data = await query("SELECT range(100)::Array(UInt32) as val");
       const result = decode(data, 1, 1);
-      expect(result.rows![0].values[0].children).toHaveLength(100);
+      const children = result.rows![0].values[0].children!;
+      expect(children[0].label).toBe('length');
+      expect(children[0].value).toBe(100);
+      expect(getElements(children)).toHaveLength(100);
     });
   });
 

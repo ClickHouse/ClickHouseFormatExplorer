@@ -725,8 +725,20 @@ export class RowBinaryDecoder extends FormatDecoder {
   // Collection decoders
   private decodeArray(elementType: ClickHouseType): AstNode {
     const startOffset = this.reader.offset;
+
+    // Decode array length with AST node
+    const lengthStart = this.reader.offset;
     const { value: count } = decodeLEB128(this.reader);
-    const children: AstNode[] = [];
+    const lengthNode: AstNode = {
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: lengthStart, end: this.reader.offset },
+      value: count,
+      displayValue: String(count),
+      label: 'length',
+    };
+
+    const children: AstNode[] = [lengthNode];
 
     for (let i = 0; i < count; i++) {
       const child = this.decodeValue(elementType, `[${i}]`);
@@ -738,7 +750,7 @@ export class RowBinaryDecoder extends FormatDecoder {
       id: this.generateId(),
       type: `Array(${typeToString(elementType)})`,
       byteRange: { start: startOffset, end: this.reader.offset },
-      value: children.map((c) => c.value),
+      value: children.slice(1).map((c) => c.value), // Skip length node for value
       displayValue: `[${count} elements]`,
       children,
     };
