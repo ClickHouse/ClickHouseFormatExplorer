@@ -2178,7 +2178,6 @@ When `Dynamic` has more distinct types than `max_types`:
 - Additional types are stored in binary form in a "SharedVariant" type (always the last variant)
 - Each value in SharedVariant is: `encodeDataType(T) + serializeBinary(value, T)`
 - On deserialization, the type is decoded from the binary prefix and the value is deserialized
-
 ### 6.9 JSON
 
 The `JSON` type stores semi-structured JSON data with automatic schema inference. It uses an object-oriented storage model where JSON paths are stored as separate columns, similar to how `Nested` columns work.
@@ -2225,7 +2224,9 @@ Similar to `Dynamic`, `JSON` uses multiple streams:
 **V3 (version = 4):**
 - Like V2 with binary type encoding and optional statistics flag
 
-> **Note:** Version numbers are not sequential. V1=0, V2=2, V3=4. There is no version 3.
+> **Note:** JSON Object version numbers are: V1=0, STRING=1, V2=2, FLATTENED=3, V3=4.
+
+> **Important:** `Dynamic` columns (used for dynamic paths) have **different** version numbers: V1=1, V2=2, FLATTENED=3, V3=4. Don't confuse JSON V1 (=0) with Dynamic V1 (=1).
 
 **STRING (version = 1):**
 - Special mode for Native format only
@@ -2388,15 +2389,15 @@ const block = new Uint8Array([
                                            //   - typed path "a" is NOT listed here
                                            //   - only runtime-discovered paths appear
 
-  // Statistics (PREFIX mode):
-  0x01,                                    // Path "b" non-null count = 1 (VarUInt)
-  0x00,                                    // Shared data statistics: 0 entries (VarUInt)
+  // NOTE: In Native format, statistics mode defaults to NONE, so no
+  // statistics are written here. The next bytes are the Dynamic prefix.
 
   // ═══════════════════════════════════════════════════════════════════
   // DYNAMIC STRUCTURE STREAM (prefix for dynamic path "b")
   // ═══════════════════════════════════════════════════════════════════
-  0x00, 0x00, 0x00, 0x00,                  // Dynamic version = 0 (V1)
+  0x01, 0x00, 0x00, 0x00,                  // Dynamic version = 1 (V1)
   0x00, 0x00, 0x00, 0x00,                  //   (UInt64 little-endian)
+                                           //   NOTE: Dynamic V1=1, V2=2, FLATTENED=3, V3=4
 
   // V1 Dynamic structure:
   0x01,                                    // max_dynamic_types = 1 (VarUInt)
@@ -2406,10 +2407,8 @@ const block = new Uint8Array([
   0x06, 0x53, 0x74, 0x72, 0x69,           // Type 0: "String" (len=6)
   0x6e, 0x67,
 
-  // Dynamic statistics (for [String, SharedVariant]):
-  0x00,                                    // String variant row count = 0 (placeholder)
-  0x00,                                    // SharedVariant row count = 0 (placeholder)
-  0x00,                                    // Shared variant statistics: 0 entries
+  // NOTE: Dynamic statistics also use NONE mode in Native format,
+  // so no statistics written here either.
 
   // ═══════════════════════════════════════════════════════════════════
   // VARIANT STRUCTURE STREAM (prefix for Dynamic's Variant)
@@ -2428,7 +2427,8 @@ const block = new Uint8Array([
   // --- DYNAMIC PATH "b" (as Dynamic -> Variant) ---
   // Variant discriminator column (1 row):
   0x01,                                    // Row 0: discriminator = 1 (String variant)
-                                           //   0 = NULL, 1 = String, 2 = SharedVariant
+                                           //   Variants sorted alphabetically: SharedVariant=0, String=1
+                                           //   (255 = NULL)
 
   // String variant data:
   0x02, 0x68, 0x69,                        // value = "hi" (len=2, then "hi")
@@ -2515,23 +2515,20 @@ const block = new Uint8Array([
   0x01,                                    // num_dynamic_paths = 1 (VarUInt)
   0x01, 0x62,                              // Path 0: "b" (len=1)
 
-  0x01,                                    // Statistics: path "b" non-null count
-  0x00,                                    // Shared data statistics: 0 entries
+  // NOTE: No statistics in Native format (NONE mode is default)
 
   // ═══════════════════════════════════════════════════════════════════
   // DYNAMIC STRUCTURE STREAM (for path "b")
   // ═══════════════════════════════════════════════════════════════════
-  0x00, 0x00, 0x00, 0x00,                  // Dynamic version = 0 (V1)
-  0x00, 0x00, 0x00, 0x00,
+  0x01, 0x00, 0x00, 0x00,                  // Dynamic version = 1 (V1)
+  0x00, 0x00, 0x00, 0x00,                  //   (Dynamic V1=1, V2=2, V3=4)
 
   0x01,                                    // max_dynamic_types = 1 (VarUInt)
   0x01,                                    // num_dynamic_types = 1 (VarUInt)
   0x06, 0x53, 0x74, 0x72, 0x69,           // Type 0: "String" (len=6)
   0x6e, 0x67,
 
-  0x00,                                    // Dynamic statistics (variant counts)
-  0x00,
-  0x00,
+  // NOTE: No Dynamic statistics in Native format (NONE mode)
 
   // ═══════════════════════════════════════════════════════════════════
   // VARIANT STRUCTURE STREAM
@@ -2548,6 +2545,7 @@ const block = new Uint8Array([
   0x0a, 0x00, 0x00, 0x00,                  // Row 1: a = 10
 
   // --- DYNAMIC PATH "b" - Variant discriminators (ALL ROWS) ---
+  // Variants sorted alphabetically: SharedVariant=0, String=1 (255=NULL)
   0x01,                                    // Row 0: discriminator = 1 (String)
   0x01,                                    // Row 1: discriminator = 1 (String)
 
@@ -2577,6 +2575,185 @@ const block = new Uint8Array([
 3. **Variant discriminators**: For the Dynamic path, discriminators for ALL rows come first, then the actual variant data for all rows. This enables efficient columnar processing.
 
 4. **Shared data offsets**: One UInt64 offset per row indicating how many shared path entries that row has. With 0 shared paths, all offsets are 0.
+
+**Example: JSON with exceeded max_dynamic_paths (shared data)**
+
+This example shows what happens when the number of paths exceeds `max_dynamic_paths`. Overflow paths are stored in the **shared data** section.
+
+```bash
+curl -s -XPOST "http://localhost:8123?default_format=Native&allow_experimental_json_type=1" \
+  --data-binary "SELECT '{\"a\": 1, \"b\": 2, \"c\": 3}'::JSON(max_dynamic_paths=2) AS col" | xxd
+```
+
+With `max_dynamic_paths=2` and 3 paths in the JSON:
+- Paths "a" and "b" become **dynamic paths** (stored as `Dynamic` columns)
+- Path "c" overflows to **shared data**
+
+```
+00000000: 0101 0363 6f6c 194a 534f 4e28 6d61 785f  ...col.JSON(max_
+00000010: 6479 6e61 6d69 635f 7061 7468 733d 3229  dynamic_paths=2)
+00000020: 0000 0000 0000 0000 0202 0161 0162 0100  ...........a.b..
+00000030: 0000 0000 0000 0101 0549 6e74 3634 0000  .........Int64..
+00000040: 0000 0000 0000 0100 0000 0000 0000 0101  ................
+00000050: 0549 6e74 3634 0000 0000 0000 0000 0001  .Int64..........
+00000060: 0000 0000 0000 0000 0200 0000 0000 0000  ................
+00000070: 0100 0000 0000 0000 0163 090a 0300 0000  .........c......
+00000080: 0000 0000                                ....
+```
+
+Full breakdown:
+```typescript
+const block = new Uint8Array([
+  // ═══════════════════════════════════════════════════════════════════
+  // BLOCK HEADER
+  // ═══════════════════════════════════════════════════════════════════
+  0x01,                                    // NumColumns = 1
+  0x01,                                    // NumRows = 1
+
+  // ═══════════════════════════════════════════════════════════════════
+  // COLUMN HEADER
+  // ═══════════════════════════════════════════════════════════════════
+  0x03, 0x63, 0x6f, 0x6c,                  // Column name = "col"
+  0x19,                                    // Type name length = 25
+  // "JSON(max_dynamic_paths=2)"
+  0x4a, 0x53, 0x4f, 0x4e, 0x28, 0x6d, 0x61, 0x78, 0x5f,
+  0x64, 0x79, 0x6e, 0x61, 0x6d, 0x69, 0x63, 0x5f,
+  0x70, 0x61, 0x74, 0x68, 0x73, 0x3d, 0x32, 0x29,
+
+  // ═══════════════════════════════════════════════════════════════════
+  // OBJECT STRUCTURE STREAM
+  // ═══════════════════════════════════════════════════════════════════
+  0x00, 0x00, 0x00, 0x00,                  // Version = 0 (V1)
+  0x00, 0x00, 0x00, 0x00,
+
+  0x02,                                    // max_dynamic_paths = 2
+  0x02,                                    // num_dynamic_paths = 2
+  0x01, 0x61,                              // Path 0: "a"
+  0x01, 0x62,                              // Path 1: "b"
+                                           // Note: "c" is NOT here - it's in shared data
+
+  // NOTE: No statistics in Native format (NONE mode is default)
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DYNAMIC PATH "a" STRUCTURE
+  // ═══════════════════════════════════════════════════════════════════
+  0x01, 0x00, 0x00, 0x00,                  // Dynamic version = 1 (V1)
+  0x00, 0x00, 0x00, 0x00,                  //   (Dynamic V1=1, V2=2, V3=4)
+  0x01,                                    // max_dynamic_types = 1
+  0x01,                                    // num_dynamic_types = 1
+  0x05, 0x49, 0x6e, 0x74, 0x36, 0x34,     // Type: "Int64"
+  // NOTE: No Dynamic stats (NONE mode)
+  0x00, 0x00, 0x00, 0x00,                  // Variant mode = 0 (COMPACT)
+  0x00, 0x00, 0x00, 0x00,
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DYNAMIC PATH "b" STRUCTURE (similar to "a")
+  // ═══════════════════════════════════════════════════════════════════
+  0x01, 0x00, 0x00, 0x00,                  // Dynamic version = 1 (V1)
+  0x00, 0x00, 0x00, 0x00,
+  0x01,                                    // max_dynamic_types = 1
+  0x01,                                    // num_dynamic_types = 1
+  0x05, 0x49, 0x6e, 0x74, 0x36, 0x34,     // Type: "Int64"
+  0x00, 0x00, 0x00, 0x00,                  // Variant mode = 0 (COMPACT)
+  0x00, 0x00, 0x00, 0x00,
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DYNAMIC PATH "a" DATA (Int64 value = 1)
+  // ═══════════════════════════════════════════════════════════════════
+  // Variants sorted alphabetically: Int64=0, SharedVariant=1 (255=NULL)
+  0x00,                                    // Discriminator = 0 (Int64 variant)
+  0x01, 0x00, 0x00, 0x00,                  // value = 1 (Int64 little-endian)
+  0x00, 0x00, 0x00, 0x00,
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DYNAMIC PATH "b" DATA (Int64 value = 2)
+  // ═══════════════════════════════════════════════════════════════════
+  0x00,                                    // Discriminator = 0 (Int64 variant)
+  0x02, 0x00, 0x00, 0x00,                  // value = 2 (Int64 little-endian)
+  0x00, 0x00, 0x00, 0x00,
+
+  // ═══════════════════════════════════════════════════════════════════
+  // SHARED DATA STREAM
+  // This is where path "c" lives (overflow from max_dynamic_paths)
+  // Format: Array(Tuple(path: String, value: String))
+  // ═══════════════════════════════════════════════════════════════════
+
+  // Array offsets (one UInt64 per row):
+  0x01, 0x00, 0x00, 0x00,                  // Row 0: offset = 1 (has 1 element)
+  0x00, 0x00, 0x00, 0x00,
+
+  // Shared data element 0 (path "c"):
+  0x01, 0x63,                              // Path name: "c" (len=1)
+
+  // Binary-encoded Dynamic value for "c":
+  0x09,                                    // Value string length = 9 bytes
+  0x0a,                                    // BinaryTypeIndex = 0x0a (Int64)
+  0x03, 0x00, 0x00, 0x00,                  // value = 3 (Int64 little-endian)
+  0x00, 0x00, 0x00, 0x00,
+]);
+```
+
+**Key observations for shared data:**
+
+1. **Overflow mechanism**: When paths exceed `max_dynamic_paths`, extra paths go to shared data. Here "a" and "b" are dynamic paths, "c" overflows.
+
+2. **Shared data format**: `Array(Tuple(path: String, value: String))`
+   - Array offsets indicate how many shared paths each row has
+   - Each element is a (path_name, binary_encoded_value) tuple
+
+3. **Binary-encoded values in shared data**: The value is stored as a length-prefixed string containing:
+   - `BinaryTypeIndex` (1 byte): Type identifier (0x0a = Int64)
+   - Native value: The value in its type's binary format
+
+4. **BinaryTypeIndex values** (common types):
+   | Type | Index |
+   |------|-------|
+   | Nothing | 0x00 |
+   | UInt8 | 0x01 |
+   | UInt32 | 0x03 |
+   | UInt64 | 0x04 |
+   | Int64 | 0x0a |
+   | String | 0x15 |
+   | Array | 0x1e |
+   | JSON | 0x30 |
+
+5. **Space tradeoff**: Shared data is less efficient than dynamic paths because each value includes its path name and type encoding. Use `max_dynamic_paths` wisely for your data.
+
+**Example: Variant discriminator ordering (multiple types)**
+
+Variant types are sorted **alphabetically by type name** to determine discriminator values. SharedVariant is included in this sorting. Here's an example showing how discriminators are assigned:
+
+```sql
+-- Insert multiple rows with different JSON value types
+INSERT INTO test_json VALUES
+('{"x": true}'),      -- Bool
+('{"x": 3.14}'),      -- Float64
+('{"x": "hello"}'),   -- String
+('{"x": [1,2,3]}'),   -- Array(Nullable(Int64))
+('{"x": null}')       -- NULL
+```
+
+The Dynamic column for path "x" will have variant types sorted alphabetically:
+
+| Index | Type | Notes |
+|-------|------|-------|
+| 0 | Array(Nullable(Int64)) | "A" < "B" < ... |
+| 1 | Bool | |
+| 2 | Float64 | |
+| 3 | SharedVariant | Implicit, always present |
+| 4 | String | "Sh..." < "St..." |
+| 255 | (NULL) | Special NULL_DISCRIMINATOR |
+
+The discriminator bytes in the serialized data will be:
+```
+0x01,  // Bool (index 1)
+0x02,  // Float64 (index 2)
+0x04,  // String (index 4, after SharedVariant=3)
+0x00,  // Array (index 0)
+0xff,  // NULL (255)
+```
+
+**Key rule**: For any type T in a Dynamic column, its discriminator = index in the alphabetically sorted list of [all_types + SharedVariant].
 
 **Path Naming:**
 
