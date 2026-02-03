@@ -1056,25 +1056,27 @@ describe('Dynamic Type Exhaustive Tests', () => {
       expect((result.values[0].value as string).length).toBe(10000);
     });
 
-    // BUG: Deeply nested arrays in Dynamic have incorrect structure
-    it.fails('RowBinary: deeply nested structure in Dynamic', async () => {
+    it('RowBinary: deeply nested structure in Dynamic', async () => {
       const data = await queryRowBinary("SELECT [[[1]]]::Array(Array(Array(UInt8)))::Dynamic as val");
       const result = decodeRowBinary(data);
-      // Navigate through nesting
-      let node = result.rows![0].values[0];
+      // Dynamic node: [BinaryTypeIndex, ArrayNode]
+      // ArrayNode: [size, element0, ...]
+      // Navigate: Dynamic -> Array -> first element -> ... -> UInt8
+      let node = result.rows![0].values[0].children![1]; // Get Array node (skip BinaryTypeIndex)
       for (let i = 0; i < 3; i++) {
-        node = node.children![1]; // Skip length node
+        node = node.children![1]; // Skip size node, get first element
       }
       expect(node.value).toBe(1);
     });
 
-    // BUG: Deeply nested arrays in Dynamic fail in Native decoder
-    it.fails('Native: deeply nested structure in Dynamic', async () => {
+    it('Native: deeply nested structure in Dynamic', async () => {
       const data = await queryNative("SELECT [[[1]]]::Array(Array(Array(UInt8)))::Dynamic as val");
       const result = decodeNative(data);
-      let node = result.values[0];
+      // Dynamic node: [ArrayNode] (Native structure differs)
+      // ArrayNode: [size, element0, ...]
+      let node = result.values[0].children![0]; // Get Array node
       for (let i = 0; i < 3; i++) {
-        node = node.children![1];
+        node = node.children![1]; // Skip size node, get first element
       }
       expect(node.value).toBe(1);
     });
