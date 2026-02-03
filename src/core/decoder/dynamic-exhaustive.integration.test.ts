@@ -398,15 +398,13 @@ describe('Dynamic Type Exhaustive Tests', () => {
   // INDIVIDUAL TYPE TESTS - Native
   // ============================================================
   describe('Native - Individual Types in Dynamic', () => {
-    // BUG: Native decoder returns empty value for primitives in Dynamic
-    it.fails('UInt8', async () => {
+    it('UInt8', async () => {
       const data = await queryNative('SELECT 42::UInt8::Dynamic as val');
       const result = decodeNative(data);
       expect(result.values[0].value).toBe(42);
     });
 
-    // BUG: Native decoder fails parsing type string for UInt64 in Dynamic
-    it.fails('UInt64', async () => {
+    it('UInt64', async () => {
       const data = await queryNative('SELECT 10000000000::UInt64::Dynamic as val');
       const result = decodeNative(data);
       expect(result.values[0].value).toBe(10000000000n);
@@ -436,8 +434,7 @@ describe('Dynamic Type Exhaustive Tests', () => {
       expect(result.values[0].value).toBe(true);
     });
 
-    // BUG: Native decoder fails parsing type for UUID in Dynamic
-    it.fails('UUID', async () => {
+    it('UUID', async () => {
       const data = await queryNative("SELECT toUUID('550e8400-e29b-41d4-a716-446655440000')::Dynamic as val");
       const result = decodeNative(data);
       expect(result.values[0].value).toBe('550e8400-e29b-41d4-a716-446655440000');
@@ -461,20 +458,25 @@ describe('Dynamic Type Exhaustive Tests', () => {
       expect(result.values[0].displayValue).toContain('2024-01-15');
     });
 
-    // BUG: Native decoder returns garbled/empty values for Array in Dynamic
-    it.fails('Array(UInt32)', async () => {
+    it('Array(UInt32)', async () => {
       const data = await queryNative('SELECT [1, 2, 3]::Array(UInt32)::Dynamic as val');
       const result = decodeNative(data);
-      const elements = result.values[0].children!.slice(1);
-      expect(elements.map(c => c.value)).toEqual([1, 2, 3]);
+      // Dynamic node has a child with the Array value
+      // Array children: [length, element0, element1, element2]
+      const arrayNode = result.values[0].children?.[0];
+      const elements = arrayNode?.children?.slice(1);  // skip length prefix
+      expect(elements?.map(c => c.value)).toEqual([1, 2, 3]);
     });
 
-    // BUG: Native decoder returns garbled values for Tuple in Dynamic
-    it.fails('Tuple(UInt32, String)', async () => {
+    it('Tuple(UInt32, String)', async () => {
       const data = await queryNative("SELECT (42, 'test')::Tuple(UInt32, String)::Dynamic as val");
       const result = decodeNative(data);
-      expect(result.values[0].children![0].value).toBe(42);
-      expect(result.values[0].children![1].value).toBe('test');
+      const replacer = (_key: string, value: unknown) => typeof value === 'bigint' ? value.toString() : value;
+      console.log('Native Tuple result:', JSON.stringify(result.values[0], replacer, 2));
+      // The Dynamic node contains a child with the Tuple value
+      const tupleNode = result.values[0].children?.[0];
+      expect(tupleNode?.children?.[0].value).toBe(42);
+      expect(tupleNode?.children?.[1].value).toBe('test');
     });
 
     it('NULL', async () => {

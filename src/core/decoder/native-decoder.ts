@@ -1351,6 +1351,24 @@ export class NativeDecoder extends FormatDecoder {
     // Parse types
     const variants = typeNames.map(name => parseType(name));
 
+    // Build discriminator mapping based on alphabetical sort of [typeNames + "SharedVariant"]
+    // Discriminators are assigned based on alphabetically sorted list, NOT positional indexing
+    const sortedWithShared = [...typeNames, 'SharedVariant'].sort();
+    // discToTypeIndex: maps discriminator -> original type index (-1 for SharedVariant)
+    const discToTypeIndex = new Map<number, number>();
+    // discToTypeName: maps discriminator -> type name for display
+    const discToTypeName = new Map<number, string>();
+    for (let idx = 0; idx < sortedWithShared.length; idx++) {
+      const name = sortedWithShared[idx];
+      discToTypeName.set(idx, name);
+      if (name === 'SharedVariant') {
+        discToTypeIndex.set(idx, -1); // -1 indicates SharedVariant
+      } else {
+        const originalIndex = typeNames.indexOf(name);
+        discToTypeIndex.set(idx, originalIndex);
+      }
+    }
+
     // Read Variant discriminators prefix (mode)
     const modeStart = this.reader.offset;
     const { value: mode } = this.reader.readUInt64LE();
@@ -1372,12 +1390,10 @@ export class NativeDecoder extends FormatDecoder {
       const { value } = this.reader.readUInt8();
       discriminators.push(value);
 
-      // Map discriminator to type name for display
+      // Map discriminator to type name for display (using alphabetical sort mapping)
       let discType: string;
       if (value === 0xFF) discType = 'NULL';
-      else if (value === numTypes) discType = 'SharedVariant';
-      else if (value < numTypes) discType = typeNames[value];
-      else discType = `unknown(${value})`;
+      else discType = discToTypeName.get(value) ?? `unknown(${value})`;
 
       discNodes.push({
         id: this.generateId(),
@@ -1402,19 +1418,19 @@ export class NativeDecoder extends FormatDecoder {
 
     const headerEndOffset = this.reader.offset;
 
-    // Count values per variant type (including SharedVariant at index numTypes)
-    // Note: In Native format Dynamic, discriminators are 0-indexed for declared types:
-    //   disc 0..N-1 = declared types 0..N-1 (0-indexed)
-    //   disc N = SharedVariant
-    //   disc 0xFF = NULL
+    // Count values per variant type (using alphabetical discriminator mapping)
+    // discToTypeIndex maps: disc -> original type index (-1 for SharedVariant)
+    // We count per original type index, with SharedVariant at numTypes
     const countPerVariant: number[] = new Array(numTypes + 1).fill(0);
     for (const disc of discriminators) {
-      if (disc === numTypes) {
-        // SharedVariant (stored at index numTypes)
+      if (disc === 0xFF) continue; // NULL
+      const typeIdx = discToTypeIndex.get(disc);
+      if (typeIdx === -1) {
+        // SharedVariant (stored at index numTypes in countPerVariant)
         countPerVariant[numTypes]++;
-      } else if (disc !== 0xFF && disc < numTypes) {
-        // Declared type (0-indexed)
-        countPerVariant[disc]++;
+      } else if (typeIdx !== undefined && typeIdx >= 0) {
+        // Declared type (original index)
+        countPerVariant[typeIdx]++;
       }
     }
 
@@ -1436,20 +1452,24 @@ export class NativeDecoder extends FormatDecoder {
           sharedVariantRead = true;
           const sharedVariantData: AstNode[] = [];
           if (version === 1n) {
-            // V1: SharedVariant stores values as length-prefixed String representation
+            // V1: SharedVariant stores values as length-prefixed blob containing BinaryTypeIndex (UInt8) + binary_value
             for (let i = 0; i < sharedVariantCount; i++) {
               const valueStart = this.reader.offset;
               const { value: len } = decodeLEB128(this.reader);
-              const { value: bytes } = this.reader.readBytes(len);
-              const strValue = new TextDecoder().decode(bytes);
+
+              // Read the BinaryTypeIndex (single byte) and decode the type
+              const { value: typeIdx } = this.reader.readUInt8();
+              const innerType = this.decodeDynamicBinaryTypeExtended(typeIdx);
+              const innerValue = this.decodeValue(innerType);
 
               sharedVariantData.push({
                 id: this.generateId(),
-                type: 'String',
+                type: typeToString(innerType),
                 byteRange: { start: valueStart, end: this.reader.offset },
-                value: strValue,
-                displayValue: `"${strValue}"`,
-                metadata: { isSharedVariant: true, serializationVersion: 1 },
+                value: innerValue.value,
+                displayValue: innerValue.displayValue,
+                children: innerValue.children,
+                metadata: { isSharedVariant: true, binaryTypeIndex: typeIdx, serializationVersion: 1 },
               });
             }
           } else {
@@ -1481,26 +1501,31 @@ export class NativeDecoder extends FormatDecoder {
       const sharedVariantData: AstNode[] = [];
       if (sharedVariantCount > 0) {
         if (version === 1n) {
+          // V1: SharedVariant stores values as length-prefixed blob containing BinaryTypeIndex (UInt8) + binary_value
           for (let i = 0; i < sharedVariantCount; i++) {
             const valueStart = this.reader.offset;
             const { value: len } = decodeLEB128(this.reader);
-            const { value: bytes } = this.reader.readBytes(len);
-            const strValue = new TextDecoder().decode(bytes);
+
+            // Read the BinaryTypeIndex (single byte) and decode the type
+            const { value: typeIdx } = this.reader.readUInt8();
+            const innerType = this.decodeDynamicBinaryTypeExtended(typeIdx);
+            const innerValue = this.decodeValue(innerType);
 
             sharedVariantData.push({
               id: this.generateId(),
-              type: 'String',
+              type: typeToString(innerType),
               byteRange: { start: valueStart, end: this.reader.offset },
-              value: strValue,
-              displayValue: `"${strValue}"`,
-              metadata: { isSharedVariant: true, serializationVersion: 1 },
+              value: innerValue.value,
+              displayValue: innerValue.displayValue,
+              children: innerValue.children,
+              metadata: { isSharedVariant: true, binaryTypeIndex: typeIdx, serializationVersion: 1 },
             });
           }
         } else {
           for (let i = 0; i < sharedVariantCount; i++) {
             const valueStart = this.reader.offset;
-            const { value: typeIdx } = decodeLEB128(this.reader);
-            const innerType = this.decodeDynamicBinaryType(typeIdx);
+            const { value: typeIdx } = this.reader.readUInt8();
+            const innerType = this.decodeDynamicBinaryTypeExtended(typeIdx);
             const innerValue = this.decodeValue(innerType);
 
             sharedVariantData.push({
@@ -1521,7 +1546,7 @@ export class NativeDecoder extends FormatDecoder {
     // Track current position in each variant's data
     const variantPositions: number[] = new Array(numTypes + 1).fill(0);
 
-    // Build result values
+    // Build result values (using discriminator mapping from alphabetical sort)
     const values: AstNode[] = [];
     for (let i = 0; i < rowCount; i++) {
       const disc = discriminators[i];
@@ -1537,61 +1562,65 @@ export class NativeDecoder extends FormatDecoder {
           label: `[${i}]`,
           metadata: { discriminator: disc, actualType: 'NULL' },
         });
-      } else if (disc === numTypes) {
-        // SharedVariant (disc N where N = numTypes)
-        const variantNode = variantData[numTypes][variantPositions[numTypes]++];
-        const actualType = variantNode.type;
-
-        variantNode.label = 'value';
-
-        values.push({
-          id: this.generateId(),
-          type: `Dynamic(${actualType})`,
-          byteRange: variantNode.byteRange,
-          value: variantNode.value,
-          displayValue: variantNode.displayValue,
-          label: `[${i}]`,
-          children: [variantNode],
-          metadata: {
-            discriminator: disc,
-            actualType,
-            isSharedVariant: true,
-            serializationVersion: Number(version),
-          },
-        });
-      } else if (disc < numTypes) {
-        // Declared type (0-indexed: disc 0 = type 0, disc 1 = type 1, etc.)
-        const typeIndex = disc;
-        const variantNode = variantData[typeIndex][variantPositions[typeIndex]++];
-        const actualType = variantNode.type;
-
-        // Include the inner value as a child for better AST visualization
-        variantNode.label = 'value';
-
-        values.push({
-          id: this.generateId(),
-          type: `Dynamic(${actualType})`,
-          byteRange: variantNode.byteRange,
-          value: variantNode.value,
-          displayValue: variantNode.displayValue,
-          label: `[${i}]`,
-          children: [variantNode],
-          metadata: {
-            discriminator: disc,
-            actualType,
-            isSharedVariant: false,
-            serializationVersion: Number(version),
-          },
-        });
       } else {
-        values.push({
-          id: this.generateId(),
-          type: 'Dynamic',
-          byteRange: { start: startOffset, end: this.reader.offset },
-          value: `<unknown discriminator: ${disc}>`,
-          displayValue: `<unknown discriminator: ${disc}>`,
-          label: `[${i}]`,
-        });
+        // Use alphabetical discriminator mapping
+        const typeIdx = discToTypeIndex.get(disc);
+
+        if (typeIdx === -1) {
+          // SharedVariant
+          const variantNode = variantData[numTypes][variantPositions[numTypes]++];
+          const actualType = variantNode.type;
+
+          variantNode.label = 'value';
+
+          values.push({
+            id: this.generateId(),
+            type: `Dynamic(${actualType})`,
+            byteRange: variantNode.byteRange,
+            value: variantNode.value,
+            displayValue: variantNode.displayValue,
+            label: `[${i}]`,
+            children: [variantNode],
+            metadata: {
+              discriminator: disc,
+              actualType,
+              isSharedVariant: true,
+              serializationVersion: Number(version),
+            },
+          });
+        } else if (typeIdx !== undefined && typeIdx >= 0) {
+          // Declared type (using original type index from mapping)
+          const variantNode = variantData[typeIdx][variantPositions[typeIdx]++];
+          const actualType = variantNode.type;
+
+          // Include the inner value as a child for better AST visualization
+          variantNode.label = 'value';
+
+          values.push({
+            id: this.generateId(),
+            type: `Dynamic(${actualType})`,
+            byteRange: variantNode.byteRange,
+            value: variantNode.value,
+            displayValue: variantNode.displayValue,
+            label: `[${i}]`,
+            children: [variantNode],
+            metadata: {
+              discriminator: disc,
+              actualType,
+              isSharedVariant: false,
+              serializationVersion: Number(version),
+            },
+          });
+        } else {
+          values.push({
+            id: this.generateId(),
+            type: 'Dynamic',
+            byteRange: { start: startOffset, end: this.reader.offset },
+            value: `<unknown discriminator: ${disc}>`,
+            displayValue: `<unknown discriminator: ${disc}>`,
+            label: `[${i}]`,
+          });
+        }
       }
     }
 
@@ -1650,6 +1679,112 @@ export class NativeDecoder extends FormatDecoder {
 
     // For unknown types, return String as fallback
     return { kind: 'String' };
+  }
+
+  /**
+   * Extended binary type index decoder that handles all ClickHouse types
+   * Used for SharedVariant decoding where complex types may appear
+   */
+  private decodeDynamicBinaryTypeExtended(typeIdx: number): ClickHouseType {
+    switch (typeIdx) {
+      case 0x00: return { kind: 'String' }; // Nothing - fallback to String
+      case 0x01: return { kind: 'UInt8' };
+      case 0x02: return { kind: 'UInt16' };
+      case 0x03: return { kind: 'UInt32' };
+      case 0x04: return { kind: 'UInt64' };
+      case 0x05: return { kind: 'UInt128' };
+      case 0x06: return { kind: 'UInt256' };
+      case 0x07: return { kind: 'Int8' };
+      case 0x08: return { kind: 'Int16' };
+      case 0x09: return { kind: 'Int32' };
+      case 0x0a: return { kind: 'Int64' };
+      case 0x0b: return { kind: 'Int128' };
+      case 0x0c: return { kind: 'Int256' };
+      case 0x0d: return { kind: 'Float32' };
+      case 0x0e: return { kind: 'Float64' };
+      case 0x0f: return { kind: 'Date' };
+      case 0x10: return { kind: 'Date32' };
+      case 0x11: return { kind: 'DateTime' };
+      case 0x12: {
+        // DateTime with timezone
+        const { value: tzLen } = decodeLEB128(this.reader);
+        const { value: tzBytes } = this.reader.readBytes(tzLen);
+        const timezone = new TextDecoder().decode(tzBytes);
+        return { kind: 'DateTime', timezone };
+      }
+      case 0x13: {
+        // DateTime64
+        const { value: precision } = this.reader.readUInt8();
+        return { kind: 'DateTime64', precision };
+      }
+      case 0x14: {
+        // DateTime64 with timezone
+        const { value: precision } = this.reader.readUInt8();
+        const { value: tzLen } = decodeLEB128(this.reader);
+        const { value: tzBytes } = this.reader.readBytes(tzLen);
+        const timezone = new TextDecoder().decode(tzBytes);
+        return { kind: 'DateTime64', precision, timezone };
+      }
+      case 0x15: return { kind: 'String' };
+      case 0x16: {
+        // FixedString
+        const { value: length } = decodeLEB128(this.reader);
+        return { kind: 'FixedString', length };
+      }
+      case 0x1d: return { kind: 'UUID' };
+      case 0x1e: {
+        // Array
+        const { value: elemTypeIdx } = this.reader.readUInt8();
+        const element = this.decodeDynamicBinaryTypeExtended(elemTypeIdx);
+        return { kind: 'Array', element };
+      }
+      case 0x1f: {
+        // Tuple (unnamed)
+        const { value: count } = decodeLEB128(this.reader);
+        const elements: ClickHouseType[] = [];
+        for (let i = 0; i < count; i++) {
+          const { value: elemTypeIdx } = this.reader.readUInt8();
+          const elem = this.decodeDynamicBinaryTypeExtended(elemTypeIdx);
+          elements.push(elem);
+        }
+        return { kind: 'Tuple', elements };
+      }
+      case 0x20: {
+        // Named Tuple
+        const { value: count } = decodeLEB128(this.reader);
+        const elements: ClickHouseType[] = [];
+        const names: string[] = [];
+        for (let i = 0; i < count; i++) {
+          const { value: nameLen } = decodeLEB128(this.reader);
+          const { value: nameBytes } = this.reader.readBytes(nameLen);
+          names.push(new TextDecoder().decode(nameBytes));
+          const { value: elemTypeIdx } = this.reader.readUInt8();
+          const elem = this.decodeDynamicBinaryTypeExtended(elemTypeIdx);
+          elements.push(elem);
+        }
+        return { kind: 'Tuple', elements, names };
+      }
+      case 0x23: {
+        // Nullable
+        const { value: innerTypeIdx } = this.reader.readUInt8();
+        const inner = this.decodeDynamicBinaryTypeExtended(innerTypeIdx);
+        return { kind: 'Nullable', inner };
+      }
+      case 0x27: {
+        // Map
+        const { value: keyTypeIdx } = this.reader.readUInt8();
+        const key = this.decodeDynamicBinaryTypeExtended(keyTypeIdx);
+        const { value: valueTypeIdx } = this.reader.readUInt8();
+        const value = this.decodeDynamicBinaryTypeExtended(valueTypeIdx);
+        return { kind: 'Map', key, value };
+      }
+      case 0x28: return { kind: 'IPv4' };
+      case 0x29: return { kind: 'IPv6' };
+      case 0x2d: return { kind: 'Bool' };
+      default:
+        // Fallback to String for unknown types
+        return { kind: 'String' };
+    }
   }
 
   /**
