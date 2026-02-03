@@ -577,9 +577,8 @@ describe('Dynamic Type Exhaustive Tests', () => {
       expect(values[14].displayValue).toContain('1950-06-15');
       // DateTime
       expect(values[15].displayValue).toContain('2024-01-15');
-      // DateTime64 - Note: ClickHouse converts DateTime64 to Decimal64 when stored in Dynamic column
-      // So we check the raw timestamp value instead of formatted date
-      expect(values[16].displayValue).toContain('1705321845');
+      // DateTime64
+      expect(values[16].displayValue).toContain('2024-01-15 12:30:45.123');
       // UUID
       expect(values[17].value).toBe('550e8400-e29b-41d4-a716-446655440000');
       // IPv4
