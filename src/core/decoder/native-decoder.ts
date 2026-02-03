@@ -760,7 +760,7 @@ export class NativeDecoder extends FormatDecoder {
 
   // Enum decoders
   private decodeEnum8(values: Map<number, string>): AstNode {
-    const { value, range } = this.reader.readUInt8();
+    const { value, range } = this.reader.readInt8();
     const name = values.get(value) ?? `<unknown:${value}>`;
 
     return {
