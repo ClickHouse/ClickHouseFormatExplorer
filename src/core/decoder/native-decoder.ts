@@ -2609,9 +2609,12 @@ export class NativeDecoder extends FormatDecoder {
 
     // 6. Read shared data offsets (cumulative entry counts, UInt64 per row)
     const sharedOffsets: bigint[] = [];
+    const sharedOffsetNodes: AstNode[] = [];
     for (let i = 0; i < rowCount; i++) {
       const offsetNode = this.decodeUInt64();
+      offsetNode.label = `shared_data_offset[${i}]`;
       sharedOffsets.push(offsetNode.value as bigint);
+      sharedOffsetNodes.push(offsetNode);
     }
     const totalSharedEntries = rowCount > 0 ? Number(sharedOffsets[rowCount - 1]) : 0;
 
@@ -2681,6 +2684,9 @@ export class NativeDecoder extends FormatDecoder {
           children: [dynamicNode],
         });
       }
+
+      // Add shared data offset node for this row
+      children.push(sharedOffsetNodes[row]);
 
       // Add shared data values for this row
       const rowSharedEntries = sharedDataPerRow[row] || [];
