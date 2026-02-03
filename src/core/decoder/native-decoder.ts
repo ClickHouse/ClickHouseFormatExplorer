@@ -1434,81 +1434,40 @@ export class NativeDecoder extends FormatDecoder {
       }
     }
 
-    // Read sparse data for declared types AND SharedVariant
-    // IMPORTANT: SharedVariant data is stored at the position of the first empty type slot,
-    // NOT at the end. This is how ClickHouse Native format serializes Dynamic columns.
-    const variantData: AstNode[][] = [];
-    const sharedVariantCount = countPerVariant[numTypes];
-    let sharedVariantRead = false;
-
-    for (let v = 0; v < numTypes; v++) {
-      const count = countPerVariant[v];
-      if (count > 0) {
-        variantData[v] = this.decodeColumnData(variants[v], count);
-      } else {
-        variantData[v] = [];
-        // Read SharedVariant data at the first empty type position
-        if (!sharedVariantRead && sharedVariantCount > 0) {
-          sharedVariantRead = true;
-          const sharedVariantData: AstNode[] = [];
-          if (version === 1n) {
-            // V1: SharedVariant stores values as length-prefixed blob containing BinaryTypeIndex (UInt8) + binary_value
-            for (let i = 0; i < sharedVariantCount; i++) {
-              const valueStart = this.reader.offset;
-              const { value: len } = decodeLEB128(this.reader);
-
-              // Read the BinaryTypeIndex (single byte) and decode the type
-              const { value: typeIdx } = this.reader.readUInt8();
-              const innerType = this.decodeDynamicBinaryTypeExtended(typeIdx);
-              const innerValue = this.decodeValue(innerType);
-
-              sharedVariantData.push({
-                id: this.generateId(),
-                type: typeToString(innerType),
-                byteRange: { start: valueStart, end: this.reader.offset },
-                value: innerValue.value,
-                displayValue: innerValue.displayValue,
-                children: innerValue.children,
-                metadata: { isSharedVariant: true, binaryTypeIndex: typeIdx, serializationVersion: 1 },
-              });
-            }
-          } else {
-            // V2: SharedVariant stores values as binary type index + binary value
-            for (let i = 0; i < sharedVariantCount; i++) {
-              const valueStart = this.reader.offset;
-              const { value: typeIdx } = decodeLEB128(this.reader);
-              const innerType = this.decodeDynamicBinaryType(typeIdx);
-              const innerValue = this.decodeValue(innerType);
-
-              sharedVariantData.push({
-                id: this.generateId(),
-                type: typeToString(innerType),
-                byteRange: { start: valueStart, end: this.reader.offset },
-                value: innerValue.value,
-                displayValue: innerValue.displayValue,
-                children: innerValue.children,
-                metadata: { isSharedVariant: true, binaryTypeIndex: typeIdx, serializationVersion: 2 },
-              });
-            }
-          }
-          variantData[numTypes] = sharedVariantData;
-        }
+    // Count values per DISCRIMINATOR (data is serialized in discriminator order, not original type order)
+    const countPerDiscriminator: number[] = new Array(sortedWithShared.length).fill(0);
+    for (const disc of discriminators) {
+      if (disc !== 0xFF && disc < sortedWithShared.length) {
+        countPerDiscriminator[disc]++;
       }
     }
 
-    // If SharedVariant wasn't read (no empty type slots), read it at the end
-    if (!sharedVariantRead) {
-      const sharedVariantData: AstNode[] = [];
-      if (sharedVariantCount > 0) {
+    // Read sparse data in DISCRIMINATOR ORDER (alphabetically sorted)
+    // variantDataByDisc[disc] = array of AstNodes for that discriminator
+    const variantDataByDisc: AstNode[][] = [];
+
+    for (let disc = 0; disc < sortedWithShared.length; disc++) {
+      const count = countPerDiscriminator[disc];
+      const typeName = sortedWithShared[disc];
+      const typeIdx = discToTypeIndex.get(disc);
+
+      if (count === 0) {
+        variantDataByDisc[disc] = [];
+        continue;
+      }
+
+      if (typeIdx === -1) {
+        // SharedVariant
+        const sharedVariantData: AstNode[] = [];
         if (version === 1n) {
-          // V1: SharedVariant stores values as length-prefixed blob containing BinaryTypeIndex (UInt8) + binary_value
-          for (let i = 0; i < sharedVariantCount; i++) {
+          // V1: SharedVariant stores values as length-prefixed blob containing BinaryTypeIndex + binary_value
+          for (let i = 0; i < count; i++) {
             const valueStart = this.reader.offset;
             const { value: len } = decodeLEB128(this.reader);
 
             // Read the BinaryTypeIndex (single byte) and decode the type
-            const { value: typeIdx } = this.reader.readUInt8();
-            const innerType = this.decodeDynamicBinaryTypeExtended(typeIdx);
+            const { value: binTypeIdx } = this.reader.readUInt8();
+            const innerType = this.decodeDynamicBinaryTypeExtended(binTypeIdx);
             const innerValue = this.decodeValue(innerType);
 
             sharedVariantData.push({
@@ -1518,14 +1477,15 @@ export class NativeDecoder extends FormatDecoder {
               value: innerValue.value,
               displayValue: innerValue.displayValue,
               children: innerValue.children,
-              metadata: { isSharedVariant: true, binaryTypeIndex: typeIdx, serializationVersion: 1 },
+              metadata: { isSharedVariant: true, binaryTypeIndex: binTypeIdx, serializationVersion: 1 },
             });
           }
         } else {
-          for (let i = 0; i < sharedVariantCount; i++) {
+          // V2: SharedVariant stores values as binary type index + binary value
+          for (let i = 0; i < count; i++) {
             const valueStart = this.reader.offset;
-            const { value: typeIdx } = this.reader.readUInt8();
-            const innerType = this.decodeDynamicBinaryTypeExtended(typeIdx);
+            const { value: binTypeIdx } = decodeLEB128(this.reader);
+            const innerType = this.decodeDynamicBinaryType(binTypeIdx);
             const innerValue = this.decodeValue(innerType);
 
             sharedVariantData.push({
@@ -1535,18 +1495,21 @@ export class NativeDecoder extends FormatDecoder {
               value: innerValue.value,
               displayValue: innerValue.displayValue,
               children: innerValue.children,
-              metadata: { isSharedVariant: true, binaryTypeIndex: typeIdx, serializationVersion: 2 },
+              metadata: { isSharedVariant: true, binaryTypeIndex: binTypeIdx, serializationVersion: 2 },
             });
           }
         }
+        variantDataByDisc[disc] = sharedVariantData;
+      } else {
+        // Declared type
+        variantDataByDisc[disc] = this.decodeColumnData(variants[typeIdx], count);
       }
-      variantData[numTypes] = sharedVariantData;
     }
 
-    // Track current position in each variant's data
-    const variantPositions: number[] = new Array(numTypes + 1).fill(0);
+    // Track current position in each discriminator's data (indexed by discriminator)
+    const variantPositions: number[] = new Array(sortedWithShared.length).fill(0);
 
-    // Build result values (using discriminator mapping from alphabetical sort)
+    // Build result values (using discriminator to index directly into variantDataByDisc)
     const values: AstNode[] = [];
     for (let i = 0; i < rowCount; i++) {
       const disc = discriminators[i];
@@ -1562,65 +1525,38 @@ export class NativeDecoder extends FormatDecoder {
           label: `[${i}]`,
           metadata: { discriminator: disc, actualType: 'NULL' },
         });
-      } else {
-        // Use alphabetical discriminator mapping
+      } else if (disc < sortedWithShared.length) {
         const typeIdx = discToTypeIndex.get(disc);
+        const isSharedVariant = typeIdx === -1;
+        const variantNode = variantDataByDisc[disc][variantPositions[disc]++];
+        const actualType = variantNode.type;
 
-        if (typeIdx === -1) {
-          // SharedVariant
-          const variantNode = variantData[numTypes][variantPositions[numTypes]++];
-          const actualType = variantNode.type;
+        variantNode.label = 'value';
 
-          variantNode.label = 'value';
-
-          values.push({
-            id: this.generateId(),
-            type: `Dynamic(${actualType})`,
-            byteRange: variantNode.byteRange,
-            value: variantNode.value,
-            displayValue: variantNode.displayValue,
-            label: `[${i}]`,
-            children: [variantNode],
-            metadata: {
-              discriminator: disc,
-              actualType,
-              isSharedVariant: true,
-              serializationVersion: Number(version),
-            },
-          });
-        } else if (typeIdx !== undefined && typeIdx >= 0) {
-          // Declared type (using original type index from mapping)
-          const variantNode = variantData[typeIdx][variantPositions[typeIdx]++];
-          const actualType = variantNode.type;
-
-          // Include the inner value as a child for better AST visualization
-          variantNode.label = 'value';
-
-          values.push({
-            id: this.generateId(),
-            type: `Dynamic(${actualType})`,
-            byteRange: variantNode.byteRange,
-            value: variantNode.value,
-            displayValue: variantNode.displayValue,
-            label: `[${i}]`,
-            children: [variantNode],
-            metadata: {
-              discriminator: disc,
-              actualType,
-              isSharedVariant: false,
-              serializationVersion: Number(version),
-            },
-          });
-        } else {
-          values.push({
-            id: this.generateId(),
-            type: 'Dynamic',
-            byteRange: { start: startOffset, end: this.reader.offset },
-            value: `<unknown discriminator: ${disc}>`,
-            displayValue: `<unknown discriminator: ${disc}>`,
-            label: `[${i}]`,
-          });
-        }
+        values.push({
+          id: this.generateId(),
+          type: `Dynamic(${actualType})`,
+          byteRange: variantNode.byteRange,
+          value: variantNode.value,
+          displayValue: variantNode.displayValue,
+          label: `[${i}]`,
+          children: [variantNode],
+          metadata: {
+            discriminator: disc,
+            actualType,
+            isSharedVariant,
+            serializationVersion: Number(version),
+          },
+        });
+      } else {
+        values.push({
+          id: this.generateId(),
+          type: 'Dynamic',
+          byteRange: { start: startOffset, end: this.reader.offset },
+          value: `<unknown discriminator: ${disc}>`,
+          displayValue: `<unknown discriminator: ${disc}>`,
+          label: `[${i}]`,
+        });
       }
     }
 

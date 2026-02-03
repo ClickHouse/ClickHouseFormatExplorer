@@ -471,8 +471,6 @@ describe('Dynamic Type Exhaustive Tests', () => {
     it('Tuple(UInt32, String)', async () => {
       const data = await queryNative("SELECT (42, 'test')::Tuple(UInt32, String)::Dynamic as val");
       const result = decodeNative(data);
-      const replacer = (_key: string, value: unknown) => typeof value === 'bigint' ? value.toString() : value;
-      console.log('Native Tuple result:', JSON.stringify(result.values[0], replacer, 2));
       // The Dynamic node contains a child with the Tuple value
       const tupleNode = result.values[0].children?.[0];
       expect(tupleNode?.children?.[0].value).toBe(42);
@@ -873,6 +871,107 @@ describe('Dynamic Type Exhaustive Tests', () => {
 
       const totalRows = result.blocks!.reduce((sum, b) => sum + b.rowCount, 0);
       expect(totalRows).toBe(500);
+    });
+  });
+
+  // ============================================================
+  // SHARED VARIANT TESTS - max_types constraint forces SharedVariant usage
+  // ============================================================
+  describe('SharedVariant with max_types constraint', () => {
+    const tableName = 'test_dynamic_shared_variant';
+
+    afterEach(async () => {
+      await exec(`DROP TABLE IF EXISTS ${tableName}`);
+    });
+
+    it('Native: 5 different types with max_types=2 forces SharedVariant', async () => {
+      // Create table with max_types=2 - only 2 types get dedicated columns
+      // Additional types will be stored in SharedVariant
+      await exec(`
+        CREATE TABLE ${tableName} (
+          id UInt32,
+          val Dynamic(max_types=2)
+        ) ENGINE = Memory
+      `);
+
+      // Insert 5 different types:
+      // - UInt64 and String will likely get dedicated columns (first 2 types seen)
+      // - Int32, Tuple, and Float64 will go to SharedVariant
+      await exec(`INSERT INTO ${tableName} VALUES
+        (1, 42::UInt64),
+        (2, 'hello'::String),
+        (3, -123::Int32),
+        (4, (100, 'tuple_val')::Tuple(UInt32, String)),
+        (5, 3.14::Float64)
+      `);
+
+      const data = await queryNative(`SELECT id, val FROM ${tableName} ORDER BY id`);
+
+      // Decode and get the val (Dynamic) column (index 1)
+      const decoder = new NativeDecoder(data);
+      const result = decoder.decode();
+      const dynamicValues = result.blocks!.flatMap(b =>
+        b.columns[1].values.filter(v => v.type !== 'Dynamic.Header')
+      );
+
+      // Verify all values are decoded correctly
+      expect(dynamicValues).toHaveLength(5);
+
+      // Row 1: UInt64
+      expect(dynamicValues[0].value).toBe(42n);
+
+      // Row 2: String
+      expect(dynamicValues[1].value).toBe('hello');
+
+      // Row 3: Int32 (likely in SharedVariant)
+      expect(dynamicValues[2].value).toBe(-123);
+
+      // Row 4: Tuple (likely in SharedVariant)
+      const tupleNode = dynamicValues[3].children?.[0];
+      expect(tupleNode?.children?.[0].value).toBe(100);
+      expect(tupleNode?.children?.[1].value).toBe('tuple_val');
+
+      // Row 5: Float64 (likely in SharedVariant)
+      expect(dynamicValues[4].value).toBeCloseTo(3.14, 2);
+    });
+
+    it('RowBinary: 5 different types with max_types=2 forces SharedVariant', async () => {
+      await exec(`
+        CREATE TABLE ${tableName} (
+          id UInt32,
+          val Dynamic(max_types=2)
+        ) ENGINE = Memory
+      `);
+
+      await exec(`INSERT INTO ${tableName} VALUES
+        (1, 42::UInt64),
+        (2, 'hello'::String),
+        (3, -123::Int32),
+        (4, (100, 'tuple_val')::Tuple(UInt32, String)),
+        (5, 3.14::Float64)
+      `);
+
+      const data = await queryRowBinary(`SELECT id, val FROM ${tableName} ORDER BY id`);
+      const result = decodeRowBinary(data);
+
+      expect(result.rows).toHaveLength(5);
+
+      // Row 1: UInt64
+      expect(result.rows![0].values[1].value).toBe(42n);
+
+      // Row 2: String
+      expect(result.rows![1].values[1].value).toBe('hello');
+
+      // Row 3: Int32
+      expect(result.rows![2].values[1].value).toBe(-123);
+
+      // Row 4: Tuple - access the tuple elements
+      const tupleVal = result.rows![3].values[1];
+      expect(tupleVal.children?.[1].children?.[0].value).toBe(100);
+      expect(tupleVal.children?.[1].children?.[1].value).toBe('tuple_val');
+
+      // Row 5: Float64
+      expect(result.rows![4].values[1].value).toBeCloseTo(3.14, 2);
     });
   });
 

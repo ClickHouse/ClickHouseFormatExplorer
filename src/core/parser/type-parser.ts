@@ -166,14 +166,25 @@ export function parseType(typeString: string): ClickHouseType {
       }
 
       case 'Dynamic': {
-        // Optional max_types parameter
+        // Optional max_types parameter: Dynamic(max_types=N) or Dynamic(N) or Dynamic
+        let maxTypes: number | undefined;
+
         if (peek()?.type === 'NUMBER') {
-          const maxTypes = (consume() as { type: 'NUMBER'; value: number }).value;
-          expect('RPAREN');
-          return { kind: 'Dynamic', maxTypes };
+          // Simple form: Dynamic(N)
+          maxTypes = (consume() as { type: 'NUMBER'; value: number }).value;
+        } else if (peek()?.type === 'IDENTIFIER') {
+          // Named parameter form: Dynamic(max_types=N)
+          const identToken = consume() as { type: 'IDENTIFIER'; value: string };
+          if (identToken.value === 'max_types') {
+            expect('EQUALS');
+            const valueToken = expect('NUMBER') as { type: 'NUMBER'; value: number };
+            maxTypes = valueToken.value;
+          }
+          // Skip unknown parameters silently
         }
+
         expect('RPAREN');
-        return { kind: 'Dynamic' };
+        return maxTypes !== undefined ? { kind: 'Dynamic', maxTypes } : { kind: 'Dynamic' };
       }
 
       case 'JSON': {
