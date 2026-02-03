@@ -1099,6 +1099,50 @@ export class RowBinaryDecoder extends FormatDecoder {
         return { kind: 'Dynamic', maxTypes: maxTypes > 0 ? maxTypes : undefined };
       }
       case 0x2d: return { kind: 'Bool' };
+      case 0x30: {
+        // JSON with full parameters:
+        // - 1 byte: serialization version
+        // - LEB128: max_dynamic_paths
+        // - 1 byte: max_dynamic_types
+        // - LEB128: typed_paths_count + definitions
+        // - LEB128: skip_paths_count + names
+        // - LEB128: skip_regexp_count + patterns
+        this.reader.readUInt8(); // serialization version
+        const { value: maxDynamicPaths } = decodeLEB128(this.reader);
+        this.reader.readUInt8(); // max_dynamic_types
+
+        // Read typed paths
+        const { value: typedPathsCount } = decodeLEB128(this.reader);
+        const typedPaths = new Map<string, ClickHouseType>();
+        for (let i = 0; i < typedPathsCount; i++) {
+          const { value: nameLen } = decodeLEB128(this.reader);
+          const { value: nameBytes } = this.reader.readBytes(nameLen);
+          const name = new TextDecoder().decode(nameBytes);
+          const typeIndex = this.reader.readUInt8().value;
+          const pathType = this.decodeDynamicType(typeIndex);
+          if (pathType) typedPaths.set(name, pathType);
+        }
+
+        // Skip paths (not stored in type, just consume the bytes)
+        const { value: skipPathsCount } = decodeLEB128(this.reader);
+        for (let i = 0; i < skipPathsCount; i++) {
+          const { value: nameLen } = decodeLEB128(this.reader);
+          this.reader.readBytes(nameLen);
+        }
+
+        // Skip regexp patterns
+        const { value: skipRegexpCount } = decodeLEB128(this.reader);
+        for (let i = 0; i < skipRegexpCount; i++) {
+          const { value: patternLen } = decodeLEB128(this.reader);
+          this.reader.readBytes(patternLen);
+        }
+
+        return {
+          kind: 'JSON',
+          maxDynamicPaths: maxDynamicPaths > 0 ? maxDynamicPaths : undefined,
+          typedPaths: typedPaths.size > 0 ? typedPaths : undefined,
+        };
+      }
       case 0x31: return { kind: 'BFloat16' };
       case 0x32: return { kind: 'Time' };
       case 0x34: {

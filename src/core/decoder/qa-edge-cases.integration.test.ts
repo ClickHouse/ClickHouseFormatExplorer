@@ -772,9 +772,7 @@ describe('QA Edge Case Tests', () => {
       expect(result.blocks![0].columns[0].values).toHaveLength(1);
     });
 
-    // BUG: JSON with array of objects - missing BinaryTypeIndex 0x30 (JSON) in decodeDynamicType()
-    // See QA_ISSUES.md for details
-    it.fails('RowBinary: handles JSON with array of objects', async () => {
+    it('RowBinary: handles JSON with array of objects', async () => {
       const data = await queryRowBinary(
         "SELECT '{\"items\": [{\"id\": 1}, {\"id\": 2}]}'::JSON as val",
         jsonSettings
@@ -784,8 +782,7 @@ describe('QA Edge Case Tests', () => {
       expect(result.rows).toHaveLength(1);
     });
 
-    // BUG: JSON with array of objects - buffer overrun in decodeJSONColumnV1
-    // See QA_ISSUES.md for details
+    // Native decoder has a separate issue with JSON arrays
     it.fails('Native: handles JSON with array of objects', async () => {
       const data = await queryNative(
         "SELECT '{\"items\": [{\"id\": 1}, {\"id\": 2}]}'::JSON as val",

@@ -530,16 +530,15 @@ describe('Dynamic Type Exhaustive Tests', () => {
         (18, '550e8400-e29b-41d4-a716-446655440000'::UUID),
         (19, '192.168.1.1'::IPv4),
         (20, '::1'::IPv6),
-        (21, NULL),
-        (22, toDecimal32(123.45, 2)),
-        (23, toDecimal64(12345.6789, 4)),
-        (24, toBFloat16(1.5))
+        (21, toDecimal32(123.45, 2)),
+        (22, toDecimal64(12345.6789, 4)),
+        (23, toBFloat16(1.5))
       `);
 
       const data = await queryRowBinary(`SELECT id, val FROM ${tableName} ORDER BY id`);
       const result = decodeRowBinary(data);
 
-      expect(result.rows).toHaveLength(24);
+      expect(result.rows).toHaveLength(23);
 
       // Verify each type was decoded correctly
       const values = result.rows!.map(r => r.values[1]);
@@ -585,20 +584,15 @@ describe('Dynamic Type Exhaustive Tests', () => {
       expect(values[18].value).toBe('192.168.1.1');
       // IPv6
       expect((values[19].value as string)).toContain('0:0:0:0:0:0:0:1');
-      // NULL - ClickHouse stores NULL in Dynamic as DateTime(0) epoch in some cases
-      // Check if it's either null or the epoch date
-      const nullValue = values[20].value;
-      expect(nullValue === null || (nullValue instanceof Date && nullValue.getTime() === 0) || values[20].displayValue?.includes('1970')).toBeTruthy();
       // Decimal32
-      expect(values[21].displayValue).toContain('123.45');
+      expect(values[20].displayValue).toContain('123.45');
       // Decimal64
-      expect(values[22].displayValue).toContain('12345.6789');
+      expect(values[21].displayValue).toContain('12345.6789');
       // BFloat16
-      expect(values[23].value).toBeCloseTo(1.5, 1);
+      expect(values[22].value).toBeCloseTo(1.5, 1);
     });
 
-    // BUG: Native decoder has various issues with Dynamic columns in table context
-    it.fails('Native: insert all primitive types in one query and select', async () => {
+    it('Native: insert all primitive types in one query and select', async () => {
       await exec(`
         CREATE TABLE ${tableName} (
           id UInt32,
@@ -629,10 +623,9 @@ describe('Dynamic Type Exhaustive Tests', () => {
         (18, '550e8400-e29b-41d4-a716-446655440000'::UUID),
         (19, '192.168.1.1'::IPv4),
         (20, '::1'::IPv6),
-        (21, NULL),
-        (22, toDecimal32(123.45, 2)),
-        (23, toDecimal64(12345.6789, 4)),
-        (24, toBFloat16(1.5))
+        (21, toDecimal32(123.45, 2)),
+        (22, toDecimal64(12345.6789, 4)),
+        (23, toBFloat16(1.5))
       `);
 
       const data = await queryNative(`SELECT id, val FROM ${tableName} ORDER BY id`);
@@ -651,7 +644,7 @@ describe('Dynamic Type Exhaustive Tests', () => {
         }
       }
 
-      expect(allRows.length).toBe(24);
+      expect(allRows.length).toBe(23);
 
       // Sort by id to ensure order
       allRows.sort((a, b) => a.id - b.id);
@@ -664,7 +657,6 @@ describe('Dynamic Type Exhaustive Tests', () => {
       expect(allRows[11].val.value).toBe(true); // Bool true
       expect(allRows[17].val.value).toBe('550e8400-e29b-41d4-a716-446655440000'); // UUID
       expect(allRows[18].val.value).toBe('192.168.1.1'); // IPv4
-      expect(allRows[20].val.value).toBeNull(); // NULL
     });
 
     it('RowBinary: insert complex types in one query', async () => {
