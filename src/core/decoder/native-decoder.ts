@@ -1090,7 +1090,6 @@ export class NativeDecoder extends FormatDecoder {
         label: 'offset',
       });
     }
-    const offsetsEnd = this.reader.offset;
 
     // Calculate total elements and individual array sizes
     const totalElements = rowCount > 0 ? Number(offsets[rowCount - 1]) : 0;
@@ -1594,7 +1593,6 @@ export class NativeDecoder extends FormatDecoder {
 
     for (let disc = 0; disc < sortedWithShared.length; disc++) {
       const count = countPerDiscriminator[disc];
-      const typeName = sortedWithShared[disc];
       const typeIdx = discToTypeIndex.get(disc);
 
       if (count === 0) {
@@ -1609,7 +1607,7 @@ export class NativeDecoder extends FormatDecoder {
           // V1: SharedVariant stores values as length-prefixed blob containing BinaryTypeIndex + binary_value
           for (let i = 0; i < count; i++) {
             const valueStart = this.reader.offset;
-            const { value: len } = decodeLEB128(this.reader);
+            const { value: _len } = decodeLEB128(this.reader);
 
             // Read the BinaryTypeIndex (single byte) and decode the type
             const { value: binTypeIdx } = this.reader.readUInt8();
@@ -1646,7 +1644,7 @@ export class NativeDecoder extends FormatDecoder {
           }
         }
         variantDataByDisc[disc] = sharedVariantData;
-      } else {
+      } else if (typeIdx !== undefined) {
         // Declared type
         variantDataByDisc[disc] = this.decodeColumnData(variants[typeIdx], count);
       }
@@ -1921,7 +1919,9 @@ export class NativeDecoder extends FormatDecoder {
     // Handle JSON with no dynamic paths
     if (typedPathsCount === 0) {
       // If there are typed sub-columns, read them
-      if (typedSubColumns && typedSubColumns.size > 0) {
+      const hasTypedPaths = typedSubColumns !== undefined && typedSubColumns!.size > 0;
+      if (hasTypedPaths) {
+        const typedPaths = typedSubColumns!;
         // For fully-typed JSON: flag byte + typed values + shared offset
         // Collect nodes per row: [flagNode, ...pathValueNodes]
         const rowData: { flagNode: AstNode; pathNodes: Map<string, AstNode> }[] = [];
@@ -1932,7 +1932,7 @@ export class NativeDecoder extends FormatDecoder {
           flagNode.label = 'object_present';
 
           const pathNodes = new Map<string, AstNode>();
-          for (const [pathName, pathType] of typedSubColumns) {
+          for (const [pathName, pathType] of typedPaths) {
             const node = this.decodeValue(pathType);
             pathNodes.set(pathName, node);
           }
@@ -1959,7 +1959,7 @@ export class NativeDecoder extends FormatDecoder {
           children.push(rowData[row].flagNode);
 
           // Add path nodes
-          for (const [pathName] of typedSubColumns) {
+          for (const [pathName] of typedPaths) {
             const valueNode = rowData[row].pathNodes.get(pathName)!;
             jsonValue[pathName] = valueNode.value;
 
@@ -1982,7 +1982,7 @@ export class NativeDecoder extends FormatDecoder {
             type: 'JSON',
             byteRange: { start: startOffset, end: this.reader.offset },
             value: jsonValue,
-            displayValue: `{${typedSubColumns.size} paths}`,
+            displayValue: `{${typedPaths.size} paths}`,
             label: `[${row}]`,
             children,
           });
@@ -2088,8 +2088,9 @@ export class NativeDecoder extends FormatDecoder {
 
     // Read typed sub-column values first (if any) - collect AstNodes per path
     const typedPathNodes: Map<string, AstNode[]> = new Map();
-    if (typedSubColumns && typedSubColumns.size > 0) {
-      for (const [pathName, pathType] of typedSubColumns) {
+    const hasTypedSubCols = typedSubColumns !== undefined && typedSubColumns!.size > 0;
+    if (hasTypedSubCols) {
+      for (const [pathName, pathType] of typedSubColumns!) {
         const nodes: AstNode[] = [];
         for (let row = 0; row < rowCount; row++) {
           nodes.push(this.decodeValue(pathType));
@@ -2319,7 +2320,7 @@ export class NativeDecoder extends FormatDecoder {
       variants: ClickHouseType[];
       numTypes: number;
       discToTypeIndex: Map<number, number>;
-      variantPrefixes: Array<ReturnType<NativeDecoder['readJSONColumnStructure']> | null>;
+      variantPrefixes: unknown[];
     }>;
     typedSubColumns?: Map<string, ClickHouseType>;
   } {
@@ -2371,29 +2372,58 @@ export class NativeDecoder extends FormatDecoder {
       variants: ClickHouseType[];
       numTypes: number;
       discToTypeIndex: Map<number, number>;
+      variantPrefixes: unknown[];
     }> = [];
 
     for (let i = 0; i < numDynamicPaths; i++) {
+      const dynamicStructureStart = this.reader.offset;
+      const dynamicStructureChildren: AstNode[] = [];
+
       // Read Dynamic version
-      const { value: _dynVersion } = this.reader.readUInt64LE();
+      const dynVersionNode = this.decodeUInt64();
+      dynVersionNode.label = 'dynamic_version';
+      dynamicStructureChildren.push(dynVersionNode);
 
       // Read max_dynamic_types
-      const { value: _maxTypes } = decodeLEB128(this.reader);
+      const maxTypesStart = this.reader.offset;
+      const { value: maxTypes } = decodeLEB128(this.reader);
+      const maxTypesNode: AstNode = {
+        id: this.generateId(),
+        type: 'VarUInt',
+        byteRange: { start: maxTypesStart, end: this.reader.offset },
+        value: maxTypes,
+        displayValue: String(maxTypes),
+        label: 'max_dynamic_types',
+      };
+      dynamicStructureChildren.push(maxTypesNode);
 
       // Read num_dynamic_types
+      const numTypesStart = this.reader.offset;
       const { value: numTypes } = decodeLEB128(this.reader);
+      const numTypesNode: AstNode = {
+        id: this.generateId(),
+        type: 'VarUInt',
+        byteRange: { start: numTypesStart, end: this.reader.offset },
+        value: numTypes,
+        displayValue: String(numTypes),
+        label: 'num_dynamic_types',
+      };
+      dynamicStructureChildren.push(numTypesNode);
 
       // Read type names
       const typeNames: string[] = [];
       for (let t = 0; t < numTypes; t++) {
-        const { value: len } = decodeLEB128(this.reader);
-        const { value: bytes } = this.reader.readBytes(len);
-        typeNames.push(new TextDecoder().decode(bytes));
+        const typeNameNode = this.decodeString();
+        typeNameNode.label = `type_name[${t}]`;
+        dynamicStructureChildren.push(typeNameNode);
+        typeNames.push(typeNameNode.value as string);
       }
       const variants = typeNames.map(name => parseType(name));
 
       // Read variant mode
-      const { value: _mode } = this.reader.readUInt64LE();
+      const modeNode = this.decodeUInt64();
+      modeNode.label = 'variant_mode';
+      dynamicStructureChildren.push(modeNode);
 
       // Build discriminator mapping based on alphabetical sort of [typeNames + "SharedVariant"]
       const sortedWithShared = [...typeNames, 'SharedVariant'].sort();
@@ -2411,7 +2441,31 @@ export class NativeDecoder extends FormatDecoder {
       // Read variant state prefixes for types that need them
       // In Native format with BASIC variant mode, the prefix for nested complex types
       // is written BEFORE the discriminators.
-      const variantPrefixes = variants.map(v => this.readColumnPrefix(v));
+      const variantPrefixes = variants.map((v, idx) => {
+        const prefix = this.readColumnPrefix(v);
+        // If the prefix contains structure children (e.g., nested JSON), add them
+        if (prefix && typeof prefix === 'object' && 'structureChildren' in prefix) {
+          const jsonPrefix = prefix as { structureChildren: AstNode[] };
+          for (const child of jsonPrefix.structureChildren) {
+            child.label = `${typeNames[idx]}.${child.label || ''}`;
+            dynamicStructureChildren.push(child);
+          }
+        }
+        return prefix;
+      });
+
+      // Create a container node for this dynamic path's structure
+      const dynamicPathName = dynamicPathNames[i];
+      const dynamicStructureNode: AstNode = {
+        id: this.generateId(),
+        type: 'Dynamic.structure',
+        byteRange: { start: dynamicStructureStart, end: this.reader.offset },
+        value: { typeNames, numTypes },
+        displayValue: `Dynamic structure for "${dynamicPathName}" (${numTypes} types)`,
+        label: `${dynamicPathName}.structure`,
+        children: dynamicStructureChildren,
+      };
+      structureChildren.push(dynamicStructureNode);
 
       dynamicStructures.push({ typeNames, variants, numTypes, discToTypeIndex, variantPrefixes });
     }

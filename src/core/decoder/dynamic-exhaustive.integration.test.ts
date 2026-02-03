@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { ClickHouseContainer, StartedClickHouseContainer } from '@testcontainers/clickhouse';
 import { RowBinaryDecoder } from './rowbinary-decoder';
 import { NativeDecoder } from './native-decoder';
+import { AstNode } from '../types/ast';
 
 const IMAGE = 'clickhouse/clickhouse-server:latest';
 
@@ -633,7 +634,7 @@ describe('Dynamic Type Exhaustive Tests', () => {
       const result = decoder.decode();
 
       // Get all rows across blocks
-      const allRows: Array<{ id: number; val: typeof result.blocks![0]['columns'][1]['values'][0] }> = [];
+      const allRows: Array<{ id: number; val: AstNode }> = [];
       for (const block of result.blocks!) {
         for (let i = 0; i < block.rowCount; i++) {
           const idVal = block.columns[0].values[i].value as number;

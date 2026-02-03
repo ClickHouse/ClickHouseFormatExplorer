@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { ClickHouseContainer, StartedClickHouseContainer } from '@testcontainers/clickhouse';
 import { RowBinaryDecoder } from './rowbinary-decoder';
+import { AstNode } from '../types/ast';
 
 const IMAGE = 'clickhouse/clickhouse-server:latest';
 
@@ -453,7 +454,7 @@ describe('RowBinaryDecoder Integration Tests', () => {
   // ============================================================
   describe('Array Type', () => {
     // Helper to get array elements (skip first child which is the length node)
-    const getElements = (children: typeof result.rows[0]['values'][0]['children']) =>
+    const getElements = (children: AstNode[] | undefined) =>
       children?.slice(1) ?? [];
 
     it('decodes empty Array', async () => {
@@ -472,7 +473,7 @@ describe('RowBinaryDecoder Integration Tests', () => {
       const children = result.rows![0].values[0].children!;
       expect(children[0].label).toBe('length');
       expect(children[0].value).toBe(3);
-      expect(getElements(children).map(c => c.value)).toEqual([1, 2, 3]);
+      expect(getElements(children).map((c: AstNode) => c.value)).toEqual([1, 2, 3]);
     });
 
     it('decodes Array of strings', async () => {
@@ -480,7 +481,7 @@ describe('RowBinaryDecoder Integration Tests', () => {
       const result = decode(data, 1, 1);
       const children = result.rows![0].values[0].children!;
       expect(children[0].label).toBe('length');
-      expect(getElements(children).map(c => c.value)).toEqual(['hello', 'world']);
+      expect(getElements(children).map((c: AstNode) => c.value)).toEqual(['hello', 'world']);
     });
 
     it('decodes nested Array', async () => {
@@ -488,8 +489,8 @@ describe('RowBinaryDecoder Integration Tests', () => {
       const result = decode(data, 1, 1);
       const outer = getElements(result.rows![0].values[0].children!);
       expect(outer).toHaveLength(2);
-      expect(getElements(outer[0].children!).map(c => c.value)).toEqual([1, 2]);
-      expect(getElements(outer[1].children!).map(c => c.value)).toEqual([3, 4, 5]);
+      expect(getElements(outer[0].children!).map((c: AstNode) => c.value)).toEqual([1, 2]);
+      expect(getElements(outer[1].children!).map((c: AstNode) => c.value)).toEqual([3, 4, 5]);
     });
 
     it('decodes Array of Nullable', async () => {

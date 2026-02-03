@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { ClickHouseContainer, StartedClickHouseContainer } from '@testcontainers/clickhouse';
 import { NativeDecoder } from './native-decoder';
+import { AstNode } from '../types/ast';
 
 const IMAGE = 'clickhouse/clickhouse-server:latest';
 
@@ -1109,6 +1110,48 @@ describe('NativeDecoder Integration Tests', () => {
       // Overflow path "c" should be in shared data and still accessible
       // Note: The exact structure may vary, but the value should be retrievable
       expect(jsonValue.c).toBe(3n);
+    });
+
+    it('decodes JSON with array in dynamic path and includes Dynamic.structure in AST', async () => {
+      // This tests that the Dynamic structure metadata (version, max_types, num_types, type_names)
+      // for each dynamic path is included in the AST
+      const data = await query(`SELECT '{"items": [{"id": 1}, {"id": 2}]}'::JSON as val`, jsonSettings);
+      const result = decode(data, 1, 1);
+
+      const jsonNode = result.blocks![0].columns[0].values[0];
+      expect(jsonNode.children).toBeDefined();
+
+      // Find the Dynamic.structure node for "items"
+      const dynamicStructure = jsonNode.children!.find(
+        (c: AstNode) => c.type === 'Dynamic.structure' && c.label === 'items.structure'
+      );
+      expect(dynamicStructure).toBeDefined();
+      expect(dynamicStructure!.displayValue).toContain('Dynamic structure for "items"');
+
+      // The Dynamic.structure should have children for the structure metadata
+      expect(dynamicStructure!.children).toBeDefined();
+      expect(dynamicStructure!.children!.length).toBeGreaterThan(0);
+
+      // Verify the Dynamic.structure contains expected metadata nodes
+      const dynVersion = dynamicStructure!.children!.find((c: AstNode) => c.label === 'dynamic_version');
+      expect(dynVersion).toBeDefined();
+      expect(dynVersion!.type).toBe('UInt64');
+
+      const maxTypes = dynamicStructure!.children!.find((c: AstNode) => c.label === 'max_dynamic_types');
+      expect(maxTypes).toBeDefined();
+      expect(maxTypes!.type).toBe('VarUInt');
+
+      const numTypes = dynamicStructure!.children!.find((c: AstNode) => c.label === 'num_dynamic_types');
+      expect(numTypes).toBeDefined();
+      expect(numTypes!.type).toBe('VarUInt');
+
+      // Should have type name(s) for the variant types in the Dynamic column
+      const typeNameNodes = dynamicStructure!.children!.filter((c: AstNode) => c.label?.startsWith('type_name['));
+      expect(typeNameNodes.length).toBeGreaterThan(0);
+
+      const variantMode = dynamicStructure!.children!.find((c: AstNode) => c.label === 'variant_mode');
+      expect(variantMode).toBeDefined();
+      expect(variantMode!.type).toBe('UInt64');
     });
   });
 
