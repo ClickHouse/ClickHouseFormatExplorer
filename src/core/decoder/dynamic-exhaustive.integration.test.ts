@@ -667,8 +667,7 @@ describe('Dynamic Type Exhaustive Tests', () => {
       expect(allRows[20].val.value).toBeNull(); // NULL
     });
 
-    // BUG: Array/Tuple in Dynamic have incorrect structure
-    it.fails('RowBinary: insert complex types in one query', async () => {
+    it('RowBinary: insert complex types in one query', async () => {
       await exec(`
         CREATE TABLE ${tableName} (
           id UInt32,
@@ -692,35 +691,43 @@ describe('Dynamic Type Exhaustive Tests', () => {
 
       expect(result.rows).toHaveLength(7);
 
+      // For RowBinary Dynamic: children = [BinaryTypeIndex, TypeNode]
       const values = result.rows!.map(r => r.values[1]);
 
-      // Array(UInt8)
-      const arr1 = values[0].children!.slice(1);
+      // Array(UInt8) - navigate: Dynamic -> ArrayNode -> elements
+      const arrayNode1 = values[0].children![1]; // Skip BinaryTypeIndex
+      const arr1 = arrayNode1.children!.slice(1); // Skip size
       expect(arr1.map(c => c.value)).toEqual([1, 2, 3]);
 
       // Array(String)
-      const arr2 = values[1].children!.slice(1);
+      const arrayNode2 = values[1].children![1];
+      const arr2 = arrayNode2.children!.slice(1);
       expect(arr2.map(c => c.value)).toEqual(['a', 'b', 'c']);
 
       // Tuple(UInt32, String)
-      expect(values[2].children![0].value).toBe(42);
-      expect(values[2].children![1].value).toBe('test');
+      const tupleNode = values[2].children![1];
+      expect(tupleNode.children![0].value).toBe(42);
+      expect(tupleNode.children![1].value).toBe('test');
 
       // Map(String, UInt32)
-      expect(values[3].children).toHaveLength(2);
+      const mapNode = values[3].children![1];
+      expect(mapNode.children).toHaveLength(2);
 
       // Array(Array(UInt8)) - nested
-      const outer = values[4].children!.slice(1);
+      const outerArrayNode = values[4].children![1];
+      const outer = outerArrayNode.children!.slice(1);
       expect(outer).toHaveLength(2);
 
       // Array(Tuple(String, UInt32))
-      const arrTuples = values[5].children!.slice(1);
+      const arrTuplesNode = values[5].children![1];
+      const arrTuples = arrTuplesNode.children!.slice(1);
       expect(arrTuples).toHaveLength(2);
       expect(arrTuples[0].children![0].value).toBe('x');
       expect(arrTuples[0].children![1].value).toBe(10);
 
       // Map(String, Array(UInt8))
-      expect(values[6].children).toHaveLength(2);
+      const mapArrNode = values[6].children![1];
+      expect(mapArrNode.children).toHaveLength(2);
     });
 
     it('Native: insert complex types in one query', async () => {
