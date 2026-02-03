@@ -313,37 +313,43 @@ describe('Dynamic Type Exhaustive Tests', () => {
     });
 
     // Collection types
-    // BUG: Array in Dynamic has extra nesting level - returns [[1,2,3]] instead of [1,2,3]
-    it.fails('Array(UInt32)', async () => {
+    it('Array(UInt32)', async () => {
       const data = await queryRowBinary('SELECT [1, 2, 3]::Array(UInt32)::Dynamic as val');
       const result = decodeRowBinary(data);
-      expect(result.rows![0].values[0].children).toBeDefined();
-      const elements = result.rows![0].values[0].children!.slice(1); // Skip length node
+      // Dynamic node contains: [BinaryTypeIndex, Array node]
+      // The value is directly on the Dynamic node, or access Array node's children for elements
+      expect(result.rows![0].values[0].value).toEqual([1, 2, 3]);
+      // Also verify the AST structure: children[1] is the Array node, its children[1..] are elements
+      const arrayNode = result.rows![0].values[0].children![1];
+      const elements = arrayNode.children!.slice(1); // Skip length node
       expect(elements.map(c => c.value)).toEqual([1, 2, 3]);
     });
 
-    // BUG: Array in Dynamic has extra nesting level
-    it.fails('Array(String)', async () => {
+    it('Array(String)', async () => {
       const data = await queryRowBinary("SELECT ['a', 'b', 'c']::Array(String)::Dynamic as val");
       const result = decodeRowBinary(data);
-      const elements = result.rows![0].values[0].children!.slice(1);
+      expect(result.rows![0].values[0].value).toEqual(['a', 'b', 'c']);
+      const arrayNode = result.rows![0].values[0].children![1];
+      const elements = arrayNode.children!.slice(1);
       expect(elements.map(c => c.value)).toEqual(['a', 'b', 'c']);
     });
 
-    // BUG: Tuple in Dynamic has wrong values - children contain type info mixed with values
-    it.fails('Tuple(UInt32, String)', async () => {
+    it('Tuple(UInt32, String)', async () => {
       const data = await queryRowBinary("SELECT (42, 'test')::Tuple(UInt32, String)::Dynamic as val");
       const result = decodeRowBinary(data);
-      expect(result.rows![0].values[0].children![0].value).toBe(42);
-      expect(result.rows![0].values[0].children![1].value).toBe('test');
+      // Dynamic node contains: [BinaryTypeIndex, Tuple node]
+      const tupleNode = result.rows![0].values[0].children![1];
+      expect(tupleNode.children![0].value).toBe(42);
+      expect(tupleNode.children![1].value).toBe('test');
     });
 
-    // BUG: Named Tuple in Dynamic has wrong labels - labels are sorted alphabetically
-    it.fails('Named Tuple', async () => {
+    it('Named Tuple', async () => {
       const data = await queryRowBinary("SELECT CAST((1, 'x'), 'Tuple(id UInt32, name String)')::Dynamic as val");
       const result = decodeRowBinary(data);
-      expect(result.rows![0].values[0].children![0].label).toBe('id');
-      expect(result.rows![0].values[0].children![1].label).toBe('name');
+      // Dynamic node contains: [BinaryTypeIndex, Tuple node]
+      const tupleNode = result.rows![0].values[0].children![1];
+      expect(tupleNode.children![0].label).toBe('id');
+      expect(tupleNode.children![1].label).toBe('name');
     });
 
     it('Map(String, UInt32)', async () => {
