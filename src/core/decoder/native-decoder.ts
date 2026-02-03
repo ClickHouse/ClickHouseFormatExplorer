@@ -271,6 +271,22 @@ export class NativeDecoder extends FormatDecoder {
       case 'Tuple':
         return this.decodeTuple(type.elements, type.names);
 
+      // Array (single value - used in SharedVariant)
+      case 'Array':
+        return this.decodeArrayValue(type.element);
+
+      // Map (single value - used in SharedVariant)
+      case 'Map':
+        return this.decodeMapValue(type.key, type.value);
+
+      // Nullable (single value - used in SharedVariant)
+      case 'Nullable':
+        return this.decodeNullableValue(type.inner);
+
+      // LowCardinality - transparent wrapper, decode inner type
+      case 'LowCardinality':
+        return this.decodeValue(type.inner);
+
       // Geo types (same encoding as RowBinary)
       case 'Point':
         return this.decodePoint();
@@ -282,6 +298,133 @@ export class NativeDecoder extends FormatDecoder {
       default:
         throw new Error(`Native format: ${typeToString(type)} not yet implemented`);
     }
+  }
+
+  /**
+   * Decode a single Array value (used in SharedVariant)
+   * Format: LEB128 size + elements
+   */
+  private decodeArrayValue(elementType: ClickHouseType): AstNode {
+    const start = this.reader.offset;
+    const typeStr = `Array(${typeToString(elementType)})`;
+
+    // Read array size
+    const { value: size } = decodeLEB128(this.reader);
+
+    // Read elements
+    const children: AstNode[] = [];
+    children.push({
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start, end: this.reader.offset },
+      value: size,
+      displayValue: String(size),
+      label: 'size',
+    });
+
+    const values: unknown[] = [];
+    for (let i = 0; i < size; i++) {
+      const elem = this.decodeValue(elementType);
+      elem.label = `[${i}]`;
+      children.push(elem);
+      values.push(elem.value);
+    }
+
+    return {
+      id: this.generateId(),
+      type: typeStr,
+      byteRange: { start, end: this.reader.offset },
+      value: values,
+      displayValue: `[${values.map(v => typeof v === 'string' ? `"${v}"` : String(v)).join(', ')}]`,
+      children,
+    };
+  }
+
+  /**
+   * Decode a single Map value (used in SharedVariant)
+   * Format: LEB128 size + key-value pairs
+   */
+  private decodeMapValue(keyType: ClickHouseType, valueType: ClickHouseType): AstNode {
+    const start = this.reader.offset;
+    const typeStr = `Map(${typeToString(keyType)}, ${typeToString(valueType)})`;
+
+    // Read map size
+    const { value: size } = decodeLEB128(this.reader);
+
+    // Read key-value pairs
+    const children: AstNode[] = [];
+    children.push({
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start, end: this.reader.offset },
+      value: size,
+      displayValue: String(size),
+      label: 'size',
+    });
+
+    const mapValue: Record<string, unknown> = {};
+    for (let i = 0; i < size; i++) {
+      const keyNode = this.decodeValue(keyType);
+      const valueNode = this.decodeValue(valueType);
+
+      const pairNode: AstNode = {
+        id: this.generateId(),
+        type: `Tuple(${typeToString(keyType)}, ${typeToString(valueType)})`,
+        byteRange: { start: keyNode.byteRange.start, end: valueNode.byteRange.end },
+        value: [keyNode.value, valueNode.value],
+        displayValue: `(${keyNode.displayValue}, ${valueNode.displayValue})`,
+        label: `[${i}]`,
+        children: [
+          { ...keyNode, label: 'key' },
+          { ...valueNode, label: 'value' },
+        ],
+      };
+      children.push(pairNode);
+      mapValue[String(keyNode.value)] = valueNode.value;
+    }
+
+    return {
+      id: this.generateId(),
+      type: typeStr,
+      byteRange: { start, end: this.reader.offset },
+      value: mapValue,
+      displayValue: `{${Object.entries(mapValue).map(([k, v]) => `${k}: ${typeof v === 'string' ? `"${v}"` : v}`).join(', ')}}`,
+      children,
+    };
+  }
+
+  /**
+   * Decode a single Nullable value (used in SharedVariant)
+   * Format: UInt8 null flag + value (if not null)
+   */
+  private decodeNullableValue(innerType: ClickHouseType): AstNode {
+    const start = this.reader.offset;
+    const typeStr = `Nullable(${typeToString(innerType)})`;
+
+    // Read null flag
+    const { value: isNull } = this.reader.readUInt8();
+
+    if (isNull) {
+      return {
+        id: this.generateId(),
+        type: typeStr,
+        byteRange: { start, end: this.reader.offset },
+        value: null,
+        displayValue: 'NULL',
+        metadata: { isNull: true },
+      };
+    }
+
+    const innerNode = this.decodeValue(innerType);
+    return {
+      id: this.generateId(),
+      type: typeStr,
+      byteRange: { start, end: innerNode.byteRange.end },
+      value: innerNode.value,
+      displayValue: innerNode.displayValue,
+      children: [{ ...innerNode, label: 'value' }],
+      metadata: { isNull: false },
+    };
   }
 
   private buildHeaderFromBlocks(blocks: BlockNode[]): HeaderNode {

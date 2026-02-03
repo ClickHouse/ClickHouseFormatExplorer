@@ -935,6 +935,40 @@ describe('Dynamic Type Exhaustive Tests', () => {
       expect(dynamicValues[4].value).toBeCloseTo(3.14, 2);
     });
 
+    it('Native: Array(Int64) in SharedVariant', async () => {
+      // Test Array type in SharedVariant - this was failing with "not yet implemented"
+      await exec(`
+        CREATE TABLE ${tableName} (
+          id UInt32,
+          val Dynamic(max_types=1)
+        ) ENGINE = Memory
+      `);
+
+      // Insert String (gets dedicated column) and Array (goes to SharedVariant)
+      await exec(`INSERT INTO ${tableName} VALUES
+        (1, 'hello'::String),
+        (2, [1, 2, 3]::Array(Int64))
+      `);
+
+      const data = await queryNative(`SELECT id, val FROM ${tableName} ORDER BY id`);
+
+      const decoder = new NativeDecoder(data);
+      const result = decoder.decode();
+      const dynamicValues = result.blocks!.flatMap(b =>
+        b.columns[1].values.filter(v => v.type !== 'Dynamic.Header')
+      );
+
+      expect(dynamicValues).toHaveLength(2);
+      expect(dynamicValues[0].value).toBe('hello');
+
+      // Array value from SharedVariant
+      const arrayNode = dynamicValues[1].children?.[0];
+      expect(arrayNode?.type).toBe('Array(Int64)');
+      // Skip size node (index 0), get elements
+      const elements = arrayNode?.children?.slice(1);
+      expect(elements?.map(c => c.value)).toEqual([1n, 2n, 3n]);
+    });
+
     it('RowBinary: 5 different types with max_types=2 forces SharedVariant', async () => {
       await exec(`
         CREATE TABLE ${tableName} (
