@@ -1028,18 +1028,23 @@ describe('Dynamic Type Exhaustive Tests', () => {
       expect(result.values[0].value).toBe('');
     });
 
-    // BUG: Empty array in Dynamic has extra nesting
-    it.fails('RowBinary: empty array in Dynamic', async () => {
+    it('RowBinary: empty array in Dynamic', async () => {
       const data = await queryRowBinary('SELECT []::Array(UInt8)::Dynamic as val');
       const result = decodeRowBinary(data);
-      const elements = result.rows![0].values[0].children!.slice(1);
+      // Dynamic node: [BinaryTypeIndex, ArrayNode]
+      // ArrayNode: [size, element0, ...]
+      const arrayNode = result.rows![0].values[0].children![1]; // Get Array node (skip BinaryTypeIndex)
+      const elements = arrayNode.children!.slice(1); // Skip size node
       expect(elements).toHaveLength(0);
     });
 
     it('Native: empty array in Dynamic', async () => {
       const data = await queryNative('SELECT []::Array(UInt8)::Dynamic as val');
       const result = decodeNative(data);
-      const elements = result.values[0].children!.slice(1);
+      // Dynamic node: [ArrayNode] (Native structure differs from RowBinary)
+      // ArrayNode: [size, element0, ...]
+      const arrayNode = result.values[0].children![0]; // Get Array node
+      const elements = arrayNode.children!.slice(1); // Skip size node
       expect(elements).toHaveLength(0);
     });
 
