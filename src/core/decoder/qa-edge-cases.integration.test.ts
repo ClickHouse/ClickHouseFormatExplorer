@@ -782,8 +782,7 @@ describe('QA Edge Case Tests', () => {
       expect(result.rows).toHaveLength(1);
     });
 
-    // Native decoder has a separate issue with JSON arrays
-    it.fails('Native: handles JSON with array of objects', async () => {
+    it('Native: handles JSON with array of objects', async () => {
       const data = await queryNative(
         "SELECT '{\"items\": [{\"id\": 1}, {\"id\": 2}]}'::JSON as val",
         jsonSettings
