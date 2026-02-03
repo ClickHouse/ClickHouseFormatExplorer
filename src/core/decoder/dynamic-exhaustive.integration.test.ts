@@ -377,19 +377,23 @@ describe('Dynamic Type Exhaustive Tests', () => {
     });
 
     // Nested collections
-    // BUG: Nested arrays in Dynamic have incorrect structure
-    it.fails('Array(Array(UInt8))', async () => {
+    it('Array(Array(UInt8))', async () => {
       const data = await queryRowBinary('SELECT [[1, 2], [3, 4, 5]]::Array(Array(UInt8))::Dynamic as val');
       const result = decodeRowBinary(data);
-      const outer = result.rows![0].values[0].children!.slice(1);
+      // Dynamic node has: [BinaryTypeIndex, ArrayNode]
+      // ArrayNode has: [size, element0, element1, ...]
+      const arrayNode = result.rows![0].values[0].children![1];
+      const outer = arrayNode?.children?.slice(1); // Skip size
       expect(outer).toHaveLength(2);
     });
 
-    // BUG: Array of Tuples in Dynamic has incorrect structure
-    it.fails('Array(Tuple(String, UInt32))', async () => {
+    it('Array(Tuple(String, UInt32))', async () => {
       const data = await queryRowBinary("SELECT [('a', 1), ('b', 2)]::Array(Tuple(String, UInt32))::Dynamic as val");
       const result = decodeRowBinary(data);
-      const elements = result.rows![0].values[0].children!.slice(1);
+      // Dynamic node has: [BinaryTypeIndex, ArrayNode]
+      // ArrayNode has: [size, element0, element1, ...]
+      const arrayNode = result.rows![0].values[0].children![1];
+      const elements = arrayNode?.children?.slice(1); // Skip size
       expect(elements).toHaveLength(2);
     });
   });
