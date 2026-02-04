@@ -64,7 +64,9 @@ export type ClickHouseType =
   // Nested (represented as array of arrays)
   | { kind: 'Nested'; fields: { name: string; type: ClickHouseType }[] }
   // QBit vector type
-  | { kind: 'QBit'; element: ClickHouseType; dimension: number };
+  | { kind: 'QBit'; element: ClickHouseType; dimension: number }
+  // Aggregate function state
+  | { kind: 'AggregateFunction'; functionName: string; argTypes: ClickHouseType[] };
 
 /**
  * Convert a ClickHouseType back to its string representation
@@ -183,6 +185,11 @@ export function typeToString(type: ClickHouseType): string {
 
     case 'QBit':
       return `QBit(${typeToString(type.element)}, ${type.dimension})`;
+
+    case 'AggregateFunction': {
+      const args = type.argTypes.map(typeToString).join(', ');
+      return args ? `AggregateFunction(${type.functionName}, ${args})` : `AggregateFunction(${type.functionName})`;
+    }
   }
 }
 
@@ -271,6 +278,10 @@ export function getTypeColor(type: ClickHouseType): string {
     case 'LowCardinality':
     case 'QBit':
       return 'var(--type-array)';
+
+    // Aggregate function state
+    case 'AggregateFunction':
+      return 'var(--type-special)';
 
     default:
       return 'var(--type-default)';

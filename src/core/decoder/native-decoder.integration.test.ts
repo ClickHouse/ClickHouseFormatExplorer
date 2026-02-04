@@ -1328,4 +1328,50 @@ describe('NativeDecoder Integration Tests', () => {
       expect(result.blocks![0].columns[0].values[0].type).toBe('Polygon');
     });
   });
+
+  // ============================================================
+  // AGGREGATE FUNCTION STATE
+  // ============================================================
+  describe('AggregateFunction Type', () => {
+    it('decodes avgState aggregate function', async () => {
+      const data = await query("SELECT avgState(number) FROM numbers(10)");
+      const result = decode(data, 1, 1);
+
+      const node = result.blocks![0].columns[0].values[0];
+      expect(node.type).toBe('AggregateFunction(avg, UInt64)');
+      // avgState for numbers(10): sum=45 (0+1+...+9), count=10, avg=4.5
+      expect(node.displayValue).toContain('avg=4.50');
+      expect(node.displayValue).toContain('sum=45');
+      expect(node.displayValue).toContain('count=10');
+      expect(node.children).toHaveLength(2);
+      expect(node.children![0].label).toBe('numerator (sum)');
+      expect(node.children![0].value).toBe(45n);
+      expect(node.children![1].label).toBe('denominator (count)');
+      expect(node.children![1].value).toBe(10);
+    });
+
+    it('decodes sumState aggregate function', async () => {
+      const data = await query("SELECT sumState(number) FROM numbers(10)");
+      const result = decode(data, 1, 1);
+
+      const node = result.blocks![0].columns[0].values[0];
+      expect(node.type).toBe('AggregateFunction(sum, UInt64)');
+      expect(node.displayValue).toContain('sum=45');
+      expect(node.children).toHaveLength(1);
+      expect(node.children![0].label).toBe('sum');
+      expect(node.children![0].value).toBe(45n);
+    });
+
+    it('decodes countState aggregate function', async () => {
+      const data = await query("SELECT countState() FROM numbers(10)");
+      const result = decode(data, 1, 1);
+
+      const node = result.blocks![0].columns[0].values[0];
+      expect(node.type).toBe('AggregateFunction(count)');
+      expect(node.displayValue).toBe('count=10');
+      expect(node.children).toHaveLength(1);
+      expect(node.children![0].label).toBe('count');
+      expect(node.children![0].value).toBe(10);
+    });
+  });
 }, 300000);

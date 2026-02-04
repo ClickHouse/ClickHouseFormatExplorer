@@ -169,6 +169,8 @@ export class NativeDecoder extends FormatDecoder {
         return this.decodeMultiLineStringColumn(rowCount);
       case 'QBit':
         return this.decodeQBitColumn(type.element, type.dimension, rowCount);
+      case 'AggregateFunction':
+        return this.decodeAggregateFunctionColumn(type.functionName, type.argTypes, rowCount);
     }
 
     // Simple types: decode rowCount values sequentially
@@ -294,6 +296,10 @@ export class NativeDecoder extends FormatDecoder {
       // QBit vector type
       case 'QBit':
         return this.decodeQBit(type.element, type.dimension);
+
+      // AggregateFunction
+      case 'AggregateFunction':
+        return this.decodeAggregateFunction(type.functionName, type.argTypes);
 
       default:
         throw new Error(`Native format: ${typeToString(type)} not yet implemented`);
@@ -3134,5 +3140,97 @@ export class NativeDecoder extends FormatDecoder {
   private decodeQBit(elementType: ClickHouseType, dimension: number): AstNode {
     const values = this.decodeQBitColumn(elementType, dimension, 1);
     return values[0];
+  }
+
+  // AggregateFunction column decoder - stored as length-prefixed binary states
+  private decodeAggregateFunctionColumn(functionName: string, argTypes: ClickHouseType[], rowCount: number): AstNode[] {
+    const values: AstNode[] = [];
+
+    for (let i = 0; i < rowCount; i++) {
+      const node = this.decodeAggregateFunction(functionName, argTypes);
+      node.label = `[${i}]`;
+      values.push(node);
+    }
+
+    return values;
+  }
+
+  // Single AggregateFunction value decoder - format is function-specific, NO length prefix
+  private decodeAggregateFunction(functionName: string, argTypes: ClickHouseType[]): AstNode {
+    const startOffset = this.reader.offset;
+    const children: AstNode[] = [];
+    const funcLower = functionName.toLowerCase();
+
+    const argTypesStr = argTypes.map(typeToString).join(', ');
+    const typeStr = argTypesStr
+      ? `AggregateFunction(${functionName}, ${argTypesStr})`
+      : `AggregateFunction(${functionName})`;
+
+    let displayValue: string;
+    let value: unknown;
+
+    if (funcLower === 'avg') {
+      // avg: UInt64 LE numerator + VarUInt denominator
+      const numNode = this.decodeUInt64();
+      numNode.label = 'numerator (sum)';
+      children.push(numNode);
+
+      const denomStart = this.reader.offset;
+      const { value: denominator } = decodeLEB128(this.reader);
+      const denomNode: AstNode = {
+        id: this.generateId(),
+        type: 'VarUInt',
+        byteRange: { start: denomStart, end: this.reader.offset },
+        value: denominator,
+        displayValue: String(denominator),
+        label: 'denominator (count)',
+      };
+      children.push(denomNode);
+
+      const sum = numNode.value as bigint;
+      const avg = denominator > 0 ? Number(sum) / denominator : 0;
+      displayValue = `avg=${avg.toFixed(2)} (sum=${sum}, count=${denominator})`;
+      value = { sum, count: denominator, avg };
+    } else if (funcLower === 'sum') {
+      // sum: fixed-size value based on argument type
+      const sumNode = argTypes.length > 0
+        ? this.decodeValue(argTypes[0])
+        : this.decodeUInt64();
+      sumNode.label = 'sum';
+      children.push(sumNode);
+      displayValue = `sum=${sumNode.displayValue}`;
+      value = sumNode.value;
+    } else if (funcLower === 'count') {
+      // count: VarUInt
+      const countStart = this.reader.offset;
+      const { value: count } = decodeLEB128(this.reader);
+      const countNode: AstNode = {
+        id: this.generateId(),
+        type: 'VarUInt',
+        byteRange: { start: countStart, end: this.reader.offset },
+        value: count,
+        displayValue: String(count),
+        label: 'count',
+      };
+      children.push(countNode);
+      displayValue = `count=${count}`;
+      value = count;
+    } else {
+      // Unknown aggregate function - we can't decode without knowing the format
+      throw new Error(
+        `AggregateFunction(${functionName}) has no length prefix and format is unknown. ` +
+        `Supported: avg, sum, count`
+      );
+    }
+
+    return {
+      id: this.generateId(),
+      type: typeStr,
+      byteRange: { start: startOffset, end: this.reader.offset },
+      value,
+      displayValue,
+      children,
+      metadata: { functionName, argTypes: argTypesStr },
+    };
   }
 }

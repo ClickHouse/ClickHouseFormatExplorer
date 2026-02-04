@@ -238,6 +238,20 @@ export function parseType(typeString: string): ClickHouseType {
         return { kind: 'QBit', element, dimension };
       }
 
+      case 'AggregateFunction': {
+        // AggregateFunction(functionName, argType1, argType2, ...)
+        const funcNameToken = expect('IDENTIFIER') as { type: 'IDENTIFIER'; value: string };
+        const functionName = funcNameToken.value;
+        const argTypes: ClickHouseType[] = [];
+
+        while (peek()?.type === 'COMMA') {
+          consume(); // COMMA
+          argTypes.push(parseTypeExpr());
+        }
+        expect('RPAREN');
+        return { kind: 'AggregateFunction', functionName, argTypes };
+      }
+
       default:
         throw new Error(`Unknown parameterized type: ${typeName}`);
     }
