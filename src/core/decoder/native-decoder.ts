@@ -3170,8 +3170,10 @@ export class NativeDecoder extends FormatDecoder {
     let value: unknown;
 
     if (funcLower === 'avg') {
-      // avg: UInt64 LE numerator + VarUInt denominator
-      const numNode = this.decodeUInt64();
+      // avg: numerator (type depends on arg) + VarUInt denominator
+      const numNode = argTypes.length > 0
+        ? this.decodeValue(argTypes[0])
+        : this.decodeUInt64();
       numNode.label = 'numerator (sum)';
       children.push(numNode);
 
@@ -3187,7 +3189,7 @@ export class NativeDecoder extends FormatDecoder {
       };
       children.push(denomNode);
 
-      const sum = numNode.value as bigint;
+      const sum = numNode.value;
       const avg = denominator > 0 ? Number(sum) / denominator : 0;
       displayValue = `avg=${avg.toFixed(2)} (sum=${sum}, count=${denominator})`;
       value = { sum, count: denominator, avg };

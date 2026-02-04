@@ -911,6 +911,33 @@ describe('RowBinaryDecoder Integration Tests', () => {
       expect(node.children![0].label).toBe('count');
       expect(node.children![0].value).toBe(10);
     });
+
+    it('decodes sumState with Float64', async () => {
+      const data = await query("SELECT sumState(toFloat64(number)) FROM numbers(10)");
+      const result = decode(data, 1, 1);
+
+      const node = result.rows![0].values[0];
+      expect(node.type).toBe('AggregateFunction(sum, Float64)');
+      expect(node.children).toHaveLength(1);
+      expect(node.children![0].label).toBe('sum');
+      // sum of 0+1+...+9 = 45.0
+      expect(node.children![0].value).toBeCloseTo(45.0, 5);
+    });
+
+    it('decodes avgState with Float64', async () => {
+      const data = await query("SELECT avgState(toFloat64(number)) FROM numbers(10)");
+      const result = decode(data, 1, 1);
+
+      const node = result.rows![0].values[0];
+      expect(node.type).toBe('AggregateFunction(avg, Float64)');
+      expect(node.displayValue).toContain('avg=4.50');
+      expect(node.children).toHaveLength(2);
+      expect(node.children![0].label).toBe('numerator (sum)');
+      // For Float64, numerator is also Float64
+      expect(node.children![0].value).toBeCloseTo(45.0, 5);
+      expect(node.children![1].label).toBe('denominator (count)');
+      expect(node.children![1].value).toBe(10);
+    });
   });
 
   // ============================================================
