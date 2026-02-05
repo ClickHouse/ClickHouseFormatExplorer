@@ -66,7 +66,19 @@ export type ClickHouseType =
   // QBit vector type
   | { kind: 'QBit'; element: ClickHouseType; dimension: number }
   // Aggregate function state
-  | { kind: 'AggregateFunction'; functionName: string; argTypes: ClickHouseType[] };
+  | { kind: 'AggregateFunction'; functionName: string; argTypes: ClickHouseType[] }
+  // Interval types (all stored as Int64)
+  | { kind: 'IntervalNanosecond' }
+  | { kind: 'IntervalMicrosecond' }
+  | { kind: 'IntervalMillisecond' }
+  | { kind: 'IntervalSecond' }
+  | { kind: 'IntervalMinute' }
+  | { kind: 'IntervalHour' }
+  | { kind: 'IntervalDay' }
+  | { kind: 'IntervalWeek' }
+  | { kind: 'IntervalMonth' }
+  | { kind: 'IntervalQuarter' }
+  | { kind: 'IntervalYear' };
 
 /**
  * Convert a ClickHouseType back to its string representation
@@ -104,6 +116,17 @@ export function typeToString(type: ClickHouseType): string {
     case 'LineString':
     case 'MultiLineString':
     case 'Geometry':
+    case 'IntervalNanosecond':
+    case 'IntervalMicrosecond':
+    case 'IntervalMillisecond':
+    case 'IntervalSecond':
+    case 'IntervalMinute':
+    case 'IntervalHour':
+    case 'IntervalDay':
+    case 'IntervalWeek':
+    case 'IntervalMonth':
+    case 'IntervalQuarter':
+    case 'IntervalYear':
       return type.kind;
 
     // Parameterized types
@@ -231,6 +254,17 @@ export function getTypeColor(type: ClickHouseType): string {
     case 'DateTime64':
     case 'Time':
     case 'Time64':
+    case 'IntervalNanosecond':
+    case 'IntervalMicrosecond':
+    case 'IntervalMillisecond':
+    case 'IntervalSecond':
+    case 'IntervalMinute':
+    case 'IntervalHour':
+    case 'IntervalDay':
+    case 'IntervalWeek':
+    case 'IntervalMonth':
+    case 'IntervalQuarter':
+    case 'IntervalYear':
       return 'var(--type-date)';
 
     case 'Array':

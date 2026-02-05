@@ -4,7 +4,7 @@
 
 A web-based tool for visualizing ClickHouse RowBinary wire format data. Features an interactive hex viewer with AST-based type visualization, similar to ImHex. The tool queries a local ClickHouse database and presents the raw binary data alongside a decoded AST tree with bidirectional highlighting.
 
-**Current scope**: RowBinaryWithNamesAndTypes format only, with plans for expansion to other ClickHouse wire formats.
+**Current scope**: RowBinaryWithNamesAndTypes and Native formats.
 
 ## Tech Stack
 
@@ -41,9 +41,13 @@ src/
 │   │   ├── ast.ts                # AstNode, ByteRange, ParsedData interfaces
 │   │   └── clickhouse-types.ts   # ClickHouseType discriminated union
 │   ├── decoder/
-│   │   ├── decoder.ts    # Main RowBinaryDecoder - decodes all types
-│   │   ├── reader.ts     # BinaryReader with byte-range tracking
-│   │   └── leb128.ts     # LEB128 varint decoder
+│   │   ├── rowbinary-decoder.ts  # RowBinaryWithNamesAndTypes decoder
+│   │   ├── native-decoder.ts     # Native format decoder
+│   │   ├── reader.ts             # BinaryReader with byte-range tracking
+│   │   ├── leb128.ts             # LEB128 varint decoder
+│   │   ├── test-helpers.ts       # Shared test utilities
+│   │   ├── smoke-cases.ts        # Smoke test case definitions
+│   │   └── validation-cases.ts   # Validation test case definitions
 │   ├── parser/
 │   │   ├── type-lexer.ts   # Tokenizer for type strings
 │   │   └── type-parser.ts  # Parser: string -> ClickHouseType
@@ -80,17 +84,18 @@ A discriminated union representing all ClickHouse types (`src/core/types/clickho
 - Composites: `Array`, `Tuple`, `Map`, `Nullable`, `LowCardinality`
 - Advanced: `Variant`, `Dynamic`, `JSON`
 - Geo: `Point`, `Ring`, `Polygon`, `MultiPolygon`, `LineString`, `MultiLineString`, `Geometry`
-- Other: `Enum8/16`, `Nested`, `QBit`
+- Intervals: `IntervalSecond`, `IntervalMinute`, `IntervalHour`, `IntervalDay`, `IntervalWeek`, `IntervalMonth`, `IntervalQuarter`, `IntervalYear` (stored as Int64)
+- Other: `Enum8/16`, `Nested`, `QBit`, `AggregateFunction`
 
 ### Decoding Flow
 1. User enters SQL query, clicks "Run Query"
-2. `ClickHouseClient` (`src/core/clickhouse/client.ts`) POSTs query with `default_format=RowBinaryWithNamesAndTypes`
-3. `RowBinaryDecoder` (`src/core/decoder/decoder.ts:10`) decodes:
-   - Header: column count (LEB128), column names, column types
-   - Type strings parsed via `parseType()` into `ClickHouseType`
-   - Rows: for each row, decode each column value based on its type
-4. Each decoded value returns an `AstNode` with byte tracking
-5. UI renders hex view (left) and AST tree (right)
+2. `ClickHouseClient` (`src/core/clickhouse/client.ts`) POSTs query with selected format
+3. Decoder parses the binary response:
+   - **RowBinary** (`rowbinary-decoder.ts`): Row-oriented, header + rows
+   - **Native** (`native-decoder.ts`): Column-oriented with blocks
+4. Type strings parsed via `parseType()` into `ClickHouseType`
+5. Each decoded value returns an `AstNode` with byte tracking
+6. UI renders hex view (left) and AST tree (right)
 
 ### Interactive Highlighting
 - Click a node in AST tree → highlights corresponding bytes in hex view
@@ -103,10 +108,14 @@ A discriminated union representing all ClickHouse types (`src/core/types/clickho
 2. Add `typeToString()` case for serialization back to string
 3. Add `getTypeColor()` case for UI coloring
 4. Add parser case in `src/core/parser/type-parser.ts`
-5. Add decoder method in `RowBinaryDecoder` (`src/core/decoder/decoder.ts`):
+5. Add decoder method in `RowBinaryDecoder` (`src/core/decoder/rowbinary-decoder.ts`):
    - Add case in `decodeValue()` switch
    - Implement `decode{TypeName}()` method returning `AstNode`
-6. If type has binary type index (for Dynamic), add to `decodeDynamicType()`
+6. Add decoder method in `NativeDecoder` (`src/core/decoder/native-decoder.ts`):
+   - Add case in `decodeValue()` switch
+   - For columnar types, may need `decode{TypeName}Column()` method
+7. If type has binary type index (for Dynamic), add to `decodeDynamicType()`
+8. Add test cases to `smoke-cases.ts` and `validation-cases.ts`
 
 ## Important Implementation Details
 
@@ -121,7 +130,38 @@ A discriminated union representing all ClickHouse types (`src/core/types/clickho
 
 Integration tests use testcontainers to spin up a real ClickHouse instance:
 ```bash
-npm run test  # Runs src/core/decoder/decoder.integration.test.ts
+npm run test  # Runs all integration tests
 ```
 
-Tests verify decoding of various type combinations against actual ClickHouse output.
+### Test Structure
+Tests are organized into three categories with shared test case definitions:
+
+1. **Smoke Tests** (`smoke.integration.test.ts`)
+   - Verify parsing succeeds without value validation
+   - Test cases defined in `smoke-cases.ts`
+   - Parametrized for both RowBinary and Native formats
+
+2. **Validation Tests** (`validation.integration.test.ts`)
+   - Verify decoded values and AST structure
+   - Test cases defined in `validation-cases.ts` with format-specific callbacks
+   - Check values, children counts, byte ranges, metadata
+
+3. **Coverage Tests** (`coverage.integration.test.ts`)
+   - Analyze byte coverage of AST leaf nodes
+   - Report uncovered byte ranges
+
+### Test Case Interface
+```typescript
+interface ValidationTestCase {
+  name: string;
+  query: string;
+  settings?: Record<string, string | number>;
+  rowBinaryValidator?: (result: DecodedResult) => void;
+  nativeValidator?: (result: DecodedResult) => void;
+}
+```
+
+### Adding New Test Cases
+1. Add query to `smoke-cases.ts` for basic parsing verification
+2. Add to `validation-cases.ts` with validator callbacks for detailed checks
+3. Use `bothFormats(validator)` helper when validation logic is identical

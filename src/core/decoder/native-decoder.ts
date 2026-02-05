@@ -301,6 +301,30 @@ export class NativeDecoder extends FormatDecoder {
       case 'AggregateFunction':
         return this.decodeAggregateFunction(type.functionName, type.argTypes);
 
+      // Interval types (all stored as Int64)
+      case 'IntervalNanosecond':
+        return this.decodeInterval('IntervalNanosecond', 'nanoseconds');
+      case 'IntervalMicrosecond':
+        return this.decodeInterval('IntervalMicrosecond', 'microseconds');
+      case 'IntervalMillisecond':
+        return this.decodeInterval('IntervalMillisecond', 'milliseconds');
+      case 'IntervalSecond':
+        return this.decodeInterval('IntervalSecond', 'seconds');
+      case 'IntervalMinute':
+        return this.decodeInterval('IntervalMinute', 'minutes');
+      case 'IntervalHour':
+        return this.decodeInterval('IntervalHour', 'hours');
+      case 'IntervalDay':
+        return this.decodeInterval('IntervalDay', 'days');
+      case 'IntervalWeek':
+        return this.decodeInterval('IntervalWeek', 'weeks');
+      case 'IntervalMonth':
+        return this.decodeInterval('IntervalMonth', 'months');
+      case 'IntervalQuarter':
+        return this.decodeInterval('IntervalQuarter', 'quarters');
+      case 'IntervalYear':
+        return this.decodeInterval('IntervalYear', 'years');
+
       default:
         throw new Error(`Native format: ${typeToString(type)} not yet implemented`);
     }
@@ -3233,6 +3257,20 @@ export class NativeDecoder extends FormatDecoder {
       displayValue,
       children,
       metadata: { functionName, argTypes: argTypesStr },
+    };
+  }
+
+  /**
+   * Decode an Interval type (stored as Int64)
+   */
+  private decodeInterval(typeName: string, unit: string): AstNode {
+    const { value, range } = this.reader.readInt64LE();
+    return {
+      id: this.generateId(),
+      type: typeName,
+      byteRange: range,
+      value,
+      displayValue: `${value} ${unit}`,
     };
   }
 }

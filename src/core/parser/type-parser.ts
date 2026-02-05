@@ -70,6 +70,18 @@ export function parseType(typeString: string): ClickHouseType {
       Dynamic: { kind: 'Dynamic' },
       JSON: { kind: 'JSON' },
       DateTime: { kind: 'DateTime' },
+      // Interval types (all stored as Int64)
+      IntervalNanosecond: { kind: 'IntervalNanosecond' },
+      IntervalMicrosecond: { kind: 'IntervalMicrosecond' },
+      IntervalMillisecond: { kind: 'IntervalMillisecond' },
+      IntervalSecond: { kind: 'IntervalSecond' },
+      IntervalMinute: { kind: 'IntervalMinute' },
+      IntervalHour: { kind: 'IntervalHour' },
+      IntervalDay: { kind: 'IntervalDay' },
+      IntervalWeek: { kind: 'IntervalWeek' },
+      IntervalMonth: { kind: 'IntervalMonth' },
+      IntervalQuarter: { kind: 'IntervalQuarter' },
+      IntervalYear: { kind: 'IntervalYear' },
     };
 
     // If next token is not LPAREN, it's a simple type
