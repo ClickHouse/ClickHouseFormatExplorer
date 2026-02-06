@@ -1,6 +1,6 @@
 # ClickHouse Format Explorer
 
-A web-based tool for visualizing ClickHouse RowBinary and Native format data. Features an interactive hex viewer with AST-based type visualization. 100% vibecoded with Claude Code.
+A web-based tool for visualizing ClickHouse RowBinary and Native format data. Features an interactive hex viewer with AST-based type visualization.
 
 ![Screenshot](.static/screenshot.png)
 
