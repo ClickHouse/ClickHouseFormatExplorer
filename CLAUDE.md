@@ -56,6 +56,10 @@ src/
 ├── store/
 │   └── store.ts          # Zustand store (query, parsed data, UI state)
 └── styles/               # CSS files
+docs/
+├── rowbinaryspec.md      # RowBinary wire format specification
+├── nativespec.md         # Native wire format specification
+└── jsonspec.md           # JSON type specification
 docker/
 ├── nginx.conf            # Proxies /clickhouse to ClickHouse server
 ├── users.xml             # Read-only ClickHouse user
@@ -64,8 +68,9 @@ docker/
 
 ## Wire Format Docs
 
- * RowBinary: rowbinaryspec.md
- * Native: nativespec.md
+ * RowBinary: docs/rowbinaryspec.md
+ * Native: docs/nativespec.md
+ * JSON: docs/jsonspec.md
 
 ## Key Concepts
 

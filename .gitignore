@@ -27,3 +27,5 @@ npm-debug.log*
 # Test/temp files
 *.bin
 /tmp/
+
+.claude/
