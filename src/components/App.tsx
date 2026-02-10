@@ -1,11 +1,38 @@
+import { useEffect } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { HexViewer } from './HexViewer/HexViewer';
 import { AstTree } from './AstTree/AstTree';
-import { QueryInput } from './QueryInput';
+import { QueryInput, decodeBase64Url } from './QueryInput';
+import { useStore } from '../store/store';
+import { ClickHouseFormat } from '../core/types/formats';
 import logo from '../assets/clickhouse-yellow-badge.svg';
 import '../styles/app.css';
 
 function App() {
+  const setQuery = useStore((s) => s.setQuery);
+  const setFormat = useStore((s) => s.setFormat);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get('q');
+    const f = params.get('f');
+
+    if (q) {
+      try {
+        setQuery(decodeBase64Url(q));
+      } catch {
+        // ignore malformed base64
+      }
+    }
+    if (f && Object.values(ClickHouseFormat).includes(f as ClickHouseFormat)) {
+      setFormat(f as ClickHouseFormat);
+    }
+
+    if (q || f) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <div className="app">
       <header className="app-header">

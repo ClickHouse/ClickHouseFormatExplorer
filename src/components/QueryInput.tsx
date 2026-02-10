@@ -1,7 +1,22 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useStore } from '../store/store';
 import { DEFAULT_QUERY } from '../core/clickhouse/client';
 import { ClickHouseFormat, FORMAT_METADATA } from '../core/types/formats';
+
+function encodeBase64Url(str: string): string {
+  const bytes = new TextEncoder().encode(str);
+  const binary = String.fromCharCode(...bytes);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function decodeBase64Url(encoded: string): string {
+  const base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(base64);
+  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+export { encodeBase64Url, decodeBase64Url };
 
 export function QueryInput() {
   const query = useStore((s) => s.query);
@@ -15,6 +30,17 @@ export function QueryInput() {
   const queryTiming = useStore((s) => s.queryTiming);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [shareLabel, setShareLabel] = useState('Share');
+
+  const handleShare = useCallback(() => {
+    const url = new URL(window.location.href);
+    url.search = '';
+    url.searchParams.set('q', encodeBase64Url(query));
+    url.searchParams.set('f', format);
+    navigator.clipboard.writeText(url.toString());
+    setShareLabel('Copied!');
+    setTimeout(() => setShareLabel('Share'), 2000);
+  }, [query, format]);
 
   const handleExecute = useCallback(() => {
     executeQuery();
@@ -93,6 +119,9 @@ export function QueryInput() {
             title="Upload a binary file to decode"
           >
             Upload
+          </button>
+          <button className="query-btn secondary" onClick={handleShare} title="Copy shareable URL to clipboard">
+            {shareLabel}
           </button>
           <button className="query-btn secondary" onClick={handleReset} disabled={isLoading}>
             Reset
