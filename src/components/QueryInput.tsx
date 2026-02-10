@@ -2,21 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 import { useStore } from '../store/store';
 import { DEFAULT_QUERY } from '../core/clickhouse/client';
 import { ClickHouseFormat, FORMAT_METADATA } from '../core/types/formats';
-
-function encodeBase64Url(str: string): string {
-  const bytes = new TextEncoder().encode(str);
-  const binary = String.fromCharCode(...bytes);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function decodeBase64Url(encoded: string): string {
-  const base64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
-  const binary = atob(base64);
-  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
-}
-
-export { encodeBase64Url, decodeBase64Url };
+import { encodeBase64Url } from '../core/base64url';
 
 export function QueryInput() {
   const query = useStore((s) => s.query);
