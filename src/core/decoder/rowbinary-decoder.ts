@@ -754,18 +754,7 @@ export class RowBinaryDecoder extends FormatDecoder {
   private decodeArray(elementType: ClickHouseType): AstNode {
     const startOffset = this.reader.offset;
 
-    // Decode array length with AST node
-    const lengthStart = this.reader.offset;
-    const { value: count } = decodeLEB128(this.reader);
-    const lengthNode: AstNode = {
-      id: this.generateId(),
-      type: 'VarUInt',
-      byteRange: { start: lengthStart, end: this.reader.offset },
-      value: count,
-      displayValue: String(count),
-      label: 'length',
-    };
-
+    const { count, node: lengthNode } = this.decodeLEB128Node();
     const children: AstNode[] = [lengthNode];
 
     for (let i = 0; i < count; i++) {
@@ -812,17 +801,7 @@ export class RowBinaryDecoder extends FormatDecoder {
   private decodeMap(keyType: ClickHouseType, valueType: ClickHouseType): AstNode {
     const startOffset = this.reader.offset;
 
-    // Decode map length with AST node
-    const lengthStart = this.reader.offset;
-    const { value: count } = decodeLEB128(this.reader);
-    const lengthNode: AstNode = {
-      id: this.generateId(),
-      type: 'VarUInt',
-      byteRange: { start: lengthStart, end: this.reader.offset },
-      value: count,
-      displayValue: String(count),
-      label: 'length',
-    };
+    const { count, node: lengthNode } = this.decodeLEB128Node();
 
     const children: AstNode[] = [lengthNode];
 
@@ -872,15 +851,7 @@ export class RowBinaryDecoder extends FormatDecoder {
       };
     }
 
-    const discriminantNode: AstNode = {
-      id: this.generateId(),
-      type: 'UInt8',
-      byteRange: { start: startOffset, end: startOffset + 1 },
-      value: isNull,
-      displayValue: '0',
-      label: 'is_null',
-    };
-
+    const discriminantNode = this.createDiscriminantNode(startOffset, isNull, 'is_null');
     const child = this.decodeValue(innerType);
     return {
       id: this.generateId(),
@@ -913,16 +884,7 @@ export class RowBinaryDecoder extends FormatDecoder {
     }
 
     const selectedType = variants[discriminant];
-
-    const discriminantNode: AstNode = {
-      id: this.generateId(),
-      type: 'UInt8',
-      byteRange: { start: startOffset, end: startOffset + 1 },
-      value: discriminant,
-      displayValue: String(discriminant),
-      label: 'discriminant',
-    };
-
+    const discriminantNode = this.createDiscriminantNode(startOffset, discriminant, 'discriminant');
     const child = this.decodeValue(selectedType);
 
     return {
@@ -1235,18 +1197,7 @@ export class RowBinaryDecoder extends FormatDecoder {
   private decodeJSON(typedPaths?: Map<string, ClickHouseType>): AstNode {
     const startOffset = this.reader.offset;
 
-    // Read number of paths with AST node
-    const pathCountStart = this.reader.offset;
-    const { value: pathCount } = decodeLEB128(this.reader);
-    const pathCountNode: AstNode = {
-      id: this.generateId(),
-      type: 'VarUInt',
-      byteRange: { start: pathCountStart, end: this.reader.offset },
-      value: pathCount,
-      displayValue: String(pathCount),
-      label: 'path_count',
-    };
-
+    const { count: pathCount, node: pathCountNode } = this.decodeLEB128Node('path_count');
     const children: AstNode[] = [pathCountNode];
 
     for (let i = 0; i < pathCount; i++) {
@@ -1332,18 +1283,7 @@ export class RowBinaryDecoder extends FormatDecoder {
   // Ring = Array(Point)
   private decodeRing(): AstNode {
     const startOffset = this.reader.offset;
-
-    const lengthStart = this.reader.offset;
-    const { value: count } = decodeLEB128(this.reader);
-    const lengthNode: AstNode = {
-      id: this.generateId(),
-      type: 'VarUInt',
-      byteRange: { start: lengthStart, end: this.reader.offset },
-      value: count,
-      displayValue: String(count),
-      label: 'length',
-    };
-
+    const { count, node: lengthNode } = this.decodeLEB128Node();
     const children: AstNode[] = [lengthNode];
 
     for (let i = 0; i < count; i++) {
@@ -1365,18 +1305,7 @@ export class RowBinaryDecoder extends FormatDecoder {
   // Polygon = Array(Ring)
   private decodePolygon(): AstNode {
     const startOffset = this.reader.offset;
-
-    const lengthStart = this.reader.offset;
-    const { value: count } = decodeLEB128(this.reader);
-    const lengthNode: AstNode = {
-      id: this.generateId(),
-      type: 'VarUInt',
-      byteRange: { start: lengthStart, end: this.reader.offset },
-      value: count,
-      displayValue: String(count),
-      label: 'length',
-    };
-
+    const { count, node: lengthNode } = this.decodeLEB128Node();
     const children: AstNode[] = [lengthNode];
 
     for (let i = 0; i < count; i++) {
@@ -1398,18 +1327,7 @@ export class RowBinaryDecoder extends FormatDecoder {
   // MultiPolygon = Array(Polygon)
   private decodeMultiPolygon(): AstNode {
     const startOffset = this.reader.offset;
-
-    const lengthStart = this.reader.offset;
-    const { value: count } = decodeLEB128(this.reader);
-    const lengthNode: AstNode = {
-      id: this.generateId(),
-      type: 'VarUInt',
-      byteRange: { start: lengthStart, end: this.reader.offset },
-      value: count,
-      displayValue: String(count),
-      label: 'length',
-    };
-
+    const { count, node: lengthNode } = this.decodeLEB128Node();
     const children: AstNode[] = [lengthNode];
 
     for (let i = 0; i < count; i++) {
@@ -1431,18 +1349,7 @@ export class RowBinaryDecoder extends FormatDecoder {
   // LineString = Array(Point)
   private decodeLineString(): AstNode {
     const startOffset = this.reader.offset;
-
-    const lengthStart = this.reader.offset;
-    const { value: count } = decodeLEB128(this.reader);
-    const lengthNode: AstNode = {
-      id: this.generateId(),
-      type: 'VarUInt',
-      byteRange: { start: lengthStart, end: this.reader.offset },
-      value: count,
-      displayValue: String(count),
-      label: 'length',
-    };
-
+    const { count, node: lengthNode } = this.decodeLEB128Node();
     const children: AstNode[] = [lengthNode];
 
     for (let i = 0; i < count; i++) {
@@ -1464,18 +1371,7 @@ export class RowBinaryDecoder extends FormatDecoder {
   // MultiLineString = Array(LineString)
   private decodeMultiLineString(): AstNode {
     const startOffset = this.reader.offset;
-
-    const lengthStart = this.reader.offset;
-    const { value: count } = decodeLEB128(this.reader);
-    const lengthNode: AstNode = {
-      id: this.generateId(),
-      type: 'VarUInt',
-      byteRange: { start: lengthStart, end: this.reader.offset },
-      value: count,
-      displayValue: String(count),
-      label: 'length',
-    };
-
+    const { count, node: lengthNode } = this.decodeLEB128Node();
     const children: AstNode[] = [lengthNode];
 
     for (let i = 0; i < count; i++) {
@@ -1533,15 +1429,7 @@ export class RowBinaryDecoder extends FormatDecoder {
         throw new Error(`Unknown Geometry discriminant: ${discriminant}`);
     }
 
-    const discriminantNode: AstNode = {
-      id: this.generateId(),
-      type: 'UInt8',
-      byteRange: { start: startOffset, end: startOffset + 1 },
-      value: discriminant,
-      displayValue: String(discriminant),
-      label: 'discriminant',
-    };
-
+    const discriminantNode = this.createDiscriminantNode(startOffset, discriminant, 'discriminant');
     return {
       id: this.generateId(),
       type: 'Geometry',
@@ -1581,18 +1469,7 @@ export class RowBinaryDecoder extends FormatDecoder {
   private decodeQBit(elementType: ClickHouseType, dimension: number): AstNode {
     const startOffset = this.reader.offset;
 
-    // Read size (should match dimension) with AST node
-    const lengthStart = this.reader.offset;
-    const { value: size } = decodeLEB128(this.reader);
-    const lengthNode: AstNode = {
-      id: this.generateId(),
-      type: 'VarUInt',
-      byteRange: { start: lengthStart, end: this.reader.offset },
-      value: size,
-      displayValue: String(size),
-      label: 'length',
-    };
-
+    const { count: size, node: lengthNode } = this.decodeLEB128Node();
     const children: AstNode[] = [lengthNode];
     for (let i = 0; i < size; i++) {
       const child = this.decodeValue(elementType);
