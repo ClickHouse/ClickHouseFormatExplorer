@@ -811,8 +811,20 @@ export class RowBinaryDecoder extends FormatDecoder {
 
   private decodeMap(keyType: ClickHouseType, valueType: ClickHouseType): AstNode {
     const startOffset = this.reader.offset;
+
+    // Decode map length with AST node
+    const lengthStart = this.reader.offset;
     const { value: count } = decodeLEB128(this.reader);
-    const children: AstNode[] = [];
+    const lengthNode: AstNode = {
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: lengthStart, end: this.reader.offset },
+      value: count,
+      displayValue: String(count),
+      label: 'length',
+    };
+
+    const children: AstNode[] = [lengthNode];
 
     for (let i = 0; i < count; i++) {
       const entryStart = this.reader.offset;
@@ -839,7 +851,7 @@ export class RowBinaryDecoder extends FormatDecoder {
       id: this.generateId(),
       type: `Map(${typeToString(keyType)}, ${typeToString(valueType)})`,
       byteRange: { start: startOffset, end: this.reader.offset },
-      value: Object.fromEntries(children.map((c) => [c.children![0].value, c.children![1].value])),
+      value: Object.fromEntries(children.slice(1).map((c) => [c.children![0].value, c.children![1].value])),
       displayValue: `{${count} entries}`,
       children,
     };
@@ -860,6 +872,15 @@ export class RowBinaryDecoder extends FormatDecoder {
       };
     }
 
+    const discriminantNode: AstNode = {
+      id: this.generateId(),
+      type: 'UInt8',
+      byteRange: { start: startOffset, end: startOffset + 1 },
+      value: isNull,
+      displayValue: '0',
+      label: 'is_null',
+    };
+
     const child = this.decodeValue(innerType);
     return {
       id: this.generateId(),
@@ -867,7 +888,7 @@ export class RowBinaryDecoder extends FormatDecoder {
       byteRange: { start: startOffset, end: this.reader.offset },
       value: child.value,
       displayValue: child.displayValue,
-      children: [child],
+      children: [discriminantNode, child],
     };
   }
 
@@ -892,6 +913,16 @@ export class RowBinaryDecoder extends FormatDecoder {
     }
 
     const selectedType = variants[discriminant];
+
+    const discriminantNode: AstNode = {
+      id: this.generateId(),
+      type: 'UInt8',
+      byteRange: { start: startOffset, end: startOffset + 1 },
+      value: discriminant,
+      displayValue: String(discriminant),
+      label: 'discriminant',
+    };
+
     const child = this.decodeValue(selectedType);
 
     return {
@@ -900,7 +931,7 @@ export class RowBinaryDecoder extends FormatDecoder {
       byteRange: { start: startOffset, end: this.reader.offset },
       value: child.value,
       displayValue: child.displayValue,
-      children: [child],
+      children: [discriminantNode, child],
       metadata: { discriminant, selectedType: typeToString(selectedType) },
     };
   }
@@ -1204,9 +1235,19 @@ export class RowBinaryDecoder extends FormatDecoder {
   private decodeJSON(typedPaths?: Map<string, ClickHouseType>): AstNode {
     const startOffset = this.reader.offset;
 
-    // Read number of paths
+    // Read number of paths with AST node
+    const pathCountStart = this.reader.offset;
     const { value: pathCount } = decodeLEB128(this.reader);
-    const children: AstNode[] = [];
+    const pathCountNode: AstNode = {
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: pathCountStart, end: this.reader.offset },
+      value: pathCount,
+      displayValue: String(pathCount),
+      label: 'path_count',
+    };
+
+    const children: AstNode[] = [pathCountNode];
 
     for (let i = 0; i < pathCount; i++) {
       const pathStart = this.reader.offset;
@@ -1215,6 +1256,15 @@ export class RowBinaryDecoder extends FormatDecoder {
       const { value: pathLen } = decodeLEB128(this.reader);
       const { value: pathBytes } = this.reader.readBytes(pathLen);
       const path = new TextDecoder().decode(pathBytes);
+
+      const pathStringNode: AstNode = {
+        id: this.generateId(),
+        type: 'String',
+        byteRange: { start: pathStart, end: this.reader.offset },
+        value: path,
+        displayValue: `"${path}"`,
+        label: 'path',
+      };
 
       // Check if this is a typed path
       const typedType = typedPaths?.get(path);
@@ -1235,7 +1285,7 @@ export class RowBinaryDecoder extends FormatDecoder {
         value: { [path]: valueNode.value },
         displayValue: `${path}: ${valueNode.displayValue}`,
         label: path,
-        children: [valueNode],
+        children: [pathStringNode, valueNode],
       };
       children.push(pathNode);
     }
@@ -1243,8 +1293,9 @@ export class RowBinaryDecoder extends FormatDecoder {
     // Build the combined JSON value
     const jsonValue: Record<string, unknown> = {};
     for (const child of children) {
+      if (child.label === 'path_count') continue;
       const path = child.label!;
-      jsonValue[path] = child.children![0].value;
+      jsonValue[path] = child.children![1].value;
     }
 
     return {
@@ -1281,8 +1332,19 @@ export class RowBinaryDecoder extends FormatDecoder {
   // Ring = Array(Point)
   private decodeRing(): AstNode {
     const startOffset = this.reader.offset;
+
+    const lengthStart = this.reader.offset;
     const { value: count } = decodeLEB128(this.reader);
-    const children: AstNode[] = [];
+    const lengthNode: AstNode = {
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: lengthStart, end: this.reader.offset },
+      value: count,
+      displayValue: String(count),
+      label: 'length',
+    };
+
+    const children: AstNode[] = [lengthNode];
 
     for (let i = 0; i < count; i++) {
       const point = this.decodePoint();
@@ -1294,7 +1356,7 @@ export class RowBinaryDecoder extends FormatDecoder {
       id: this.generateId(),
       type: 'Ring',
       byteRange: { start: startOffset, end: this.reader.offset },
-      value: children.map((c) => c.value),
+      value: children.slice(1).map((c) => c.value),
       displayValue: `[${count} points]`,
       children,
     };
@@ -1303,8 +1365,19 @@ export class RowBinaryDecoder extends FormatDecoder {
   // Polygon = Array(Ring)
   private decodePolygon(): AstNode {
     const startOffset = this.reader.offset;
+
+    const lengthStart = this.reader.offset;
     const { value: count } = decodeLEB128(this.reader);
-    const children: AstNode[] = [];
+    const lengthNode: AstNode = {
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: lengthStart, end: this.reader.offset },
+      value: count,
+      displayValue: String(count),
+      label: 'length',
+    };
+
+    const children: AstNode[] = [lengthNode];
 
     for (let i = 0; i < count; i++) {
       const ring = this.decodeRing();
@@ -1316,7 +1389,7 @@ export class RowBinaryDecoder extends FormatDecoder {
       id: this.generateId(),
       type: 'Polygon',
       byteRange: { start: startOffset, end: this.reader.offset },
-      value: children.map((c) => c.value),
+      value: children.slice(1).map((c) => c.value),
       displayValue: `[${count} rings]`,
       children,
     };
@@ -1325,8 +1398,19 @@ export class RowBinaryDecoder extends FormatDecoder {
   // MultiPolygon = Array(Polygon)
   private decodeMultiPolygon(): AstNode {
     const startOffset = this.reader.offset;
+
+    const lengthStart = this.reader.offset;
     const { value: count } = decodeLEB128(this.reader);
-    const children: AstNode[] = [];
+    const lengthNode: AstNode = {
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: lengthStart, end: this.reader.offset },
+      value: count,
+      displayValue: String(count),
+      label: 'length',
+    };
+
+    const children: AstNode[] = [lengthNode];
 
     for (let i = 0; i < count; i++) {
       const polygon = this.decodePolygon();
@@ -1338,7 +1422,7 @@ export class RowBinaryDecoder extends FormatDecoder {
       id: this.generateId(),
       type: 'MultiPolygon',
       byteRange: { start: startOffset, end: this.reader.offset },
-      value: children.map((c) => c.value),
+      value: children.slice(1).map((c) => c.value),
       displayValue: `[${count} polygons]`,
       children,
     };
@@ -1347,8 +1431,19 @@ export class RowBinaryDecoder extends FormatDecoder {
   // LineString = Array(Point)
   private decodeLineString(): AstNode {
     const startOffset = this.reader.offset;
+
+    const lengthStart = this.reader.offset;
     const { value: count } = decodeLEB128(this.reader);
-    const children: AstNode[] = [];
+    const lengthNode: AstNode = {
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: lengthStart, end: this.reader.offset },
+      value: count,
+      displayValue: String(count),
+      label: 'length',
+    };
+
+    const children: AstNode[] = [lengthNode];
 
     for (let i = 0; i < count; i++) {
       const point = this.decodePoint();
@@ -1360,7 +1455,7 @@ export class RowBinaryDecoder extends FormatDecoder {
       id: this.generateId(),
       type: 'LineString',
       byteRange: { start: startOffset, end: this.reader.offset },
-      value: children.map((c) => c.value),
+      value: children.slice(1).map((c) => c.value),
       displayValue: `[${count} points]`,
       children,
     };
@@ -1369,8 +1464,19 @@ export class RowBinaryDecoder extends FormatDecoder {
   // MultiLineString = Array(LineString)
   private decodeMultiLineString(): AstNode {
     const startOffset = this.reader.offset;
+
+    const lengthStart = this.reader.offset;
     const { value: count } = decodeLEB128(this.reader);
-    const children: AstNode[] = [];
+    const lengthNode: AstNode = {
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: lengthStart, end: this.reader.offset },
+      value: count,
+      displayValue: String(count),
+      label: 'length',
+    };
+
+    const children: AstNode[] = [lengthNode];
 
     for (let i = 0; i < count; i++) {
       const lineString = this.decodeLineString();
@@ -1382,7 +1488,7 @@ export class RowBinaryDecoder extends FormatDecoder {
       id: this.generateId(),
       type: 'MultiLineString',
       byteRange: { start: startOffset, end: this.reader.offset },
-      value: children.map((c) => c.value),
+      value: children.slice(1).map((c) => c.value),
       displayValue: `[${count} line strings]`,
       children,
     };
@@ -1427,13 +1533,22 @@ export class RowBinaryDecoder extends FormatDecoder {
         throw new Error(`Unknown Geometry discriminant: ${discriminant}`);
     }
 
+    const discriminantNode: AstNode = {
+      id: this.generateId(),
+      type: 'UInt8',
+      byteRange: { start: startOffset, end: startOffset + 1 },
+      value: discriminant,
+      displayValue: String(discriminant),
+      label: 'discriminant',
+    };
+
     return {
       id: this.generateId(),
       type: 'Geometry',
       byteRange: { start: startOffset, end: this.reader.offset },
       value: child.value,
       displayValue: `${typeName}: ${child.displayValue}`,
-      children: [child],
+      children: [discriminantNode, child],
       metadata: { discriminant, geoType: typeName },
     };
   }
@@ -1466,10 +1581,19 @@ export class RowBinaryDecoder extends FormatDecoder {
   private decodeQBit(elementType: ClickHouseType, dimension: number): AstNode {
     const startOffset = this.reader.offset;
 
-    // Read size (should match dimension)
+    // Read size (should match dimension) with AST node
+    const lengthStart = this.reader.offset;
     const { value: size } = decodeLEB128(this.reader);
+    const lengthNode: AstNode = {
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: lengthStart, end: this.reader.offset },
+      value: size,
+      displayValue: String(size),
+      label: 'length',
+    };
 
-    const children: AstNode[] = [];
+    const children: AstNode[] = [lengthNode];
     for (let i = 0; i < size; i++) {
       const child = this.decodeValue(elementType);
       child.label = `[${i}]`;
@@ -1480,8 +1604,8 @@ export class RowBinaryDecoder extends FormatDecoder {
       id: this.generateId(),
       type: `QBit(${typeToString(elementType)}, ${dimension})`,
       byteRange: { start: startOffset, end: this.reader.offset },
-      value: children.map((c) => c.value),
-      displayValue: `[${children.map(c => c.displayValue).join(', ')}]`,
+      value: children.slice(1).map((c) => c.value),
+      displayValue: `[${children.slice(1).map(c => c.displayValue).join(', ')}]`,
       children,
       metadata: { dimension, elementType: typeToString(elementType), size },
     };

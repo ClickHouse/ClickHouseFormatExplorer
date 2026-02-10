@@ -262,10 +262,6 @@ export function getArrayElements(node: AstNode): AstNode[] {
  * Get the unwrapped value from a Nullable node
  */
 export function unwrapNullable(node: AstNode): unknown {
-  if (node.value === null) return null;
-  if (node.children && node.children.length > 0) {
-    return node.children[0].value;
-  }
   return node.value;
 }
 
@@ -302,6 +298,17 @@ export interface ByteCoverageResult {
 export function analyzeByteRange(data: ParsedData, dataLength: number): ByteCoverageResult {
   // Collect all leaf nodes from the AST
   const leafNodes: AstNode[] = [];
+
+  // Include the column count LEB128 from the header
+  if (data.header.columnCountRange) {
+    leafNodes.push({
+      id: 'header-column-count',
+      type: 'VarUInt',
+      byteRange: data.header.columnCountRange,
+      value: data.header.columnCount,
+      displayValue: String(data.header.columnCount),
+    });
+  }
 
   // From header
   for (const col of data.header.columns) {
