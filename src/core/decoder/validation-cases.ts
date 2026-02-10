@@ -626,13 +626,22 @@ export const VALIDATION_TEST_CASES: ValidationTestCase[] = [
     name: 'QBit vector values',
     query: 'SELECT [1.0, 2.0, 3.0]::QBit(Float32, 3) as val',
     settings: { allow_experimental_qbit_type: 1 },
-    ...bothFormats((r) => {
+    rowBinaryValidator: (r) => {
+      const node = r.getNode(0, 0);
+      expect(node.children).toHaveLength(4); // length + 3 elements
+      expect(node.children![0].label).toBe('length');
+      expect(node.children![0].value).toBe(3);
+      expect(node.children![1].value).toBeCloseTo(1.0, 5);
+      expect(node.children![2].value).toBeCloseTo(2.0, 5);
+      expect(node.children![3].value).toBeCloseTo(3.0, 5);
+    },
+    nativeValidator: (r) => {
       const node = r.getNode(0, 0);
       expect(node.children).toHaveLength(3);
       expect(node.children![0].value).toBeCloseTo(1.0, 5);
       expect(node.children![1].value).toBeCloseTo(2.0, 5);
       expect(node.children![2].value).toBeCloseTo(3.0, 5);
-    }),
+    },
   },
 
   // ============================================================

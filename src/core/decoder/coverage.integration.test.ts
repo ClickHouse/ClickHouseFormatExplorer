@@ -25,7 +25,7 @@ describe('Byte Coverage Tests', () => {
     await ctx.stop();
   });
 
-  // Test a representative subset of cases for coverage
+  // Test a representative subset of cases for coverage (used by Native format)
   const coverageTestCases = SMOKE_TEST_CASES.filter(c =>
     // Focus on diverse type categories
     c.name.includes('UInt8') ||
@@ -39,7 +39,7 @@ describe('Byte Coverage Tests', () => {
   );
 
   describe('RowBinary Format', () => {
-    it.each(coverageTestCases)(
+    it.each(SMOKE_TEST_CASES)(
       '$name - byte coverage',
       async ({ query, settings, skipRowBinary }) => {
         if (skipRowBinary) return;
@@ -53,9 +53,7 @@ describe('Byte Coverage Tests', () => {
           console.log(`[RowBinary] ${query}\n${details}`);
         }
 
-        // Allow some header bytes to be uncovered (column count LEB128)
-        // The header structure doesn't have leaf nodes for everything
-        expect(coverage.coveragePercent).toBeGreaterThan(80);
+        expect(coverage.isComplete).toBe(true);
       },
     );
   });
