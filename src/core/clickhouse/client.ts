@@ -1,6 +1,21 @@
 import { ClickHouseFormat } from '../types/formats';
 
 /**
+ * Electron IPC API exposed via preload script
+ */
+interface ElectronAPI {
+  executeQuery(options: { query: string; format: string }): Promise<ArrayBuffer>;
+  getConfig(): Promise<{ host: string }>;
+  saveConfig(config: { host: string }): Promise<void>;
+}
+
+declare global {
+  interface Window {
+    electronAPI?: ElectronAPI;
+  }
+}
+
+/**
  * ClickHouse HTTP client for fetching binary format data
  */
 
@@ -26,6 +41,12 @@ export class ClickHouseClient {
    * Execute a query and return raw binary data
    */
   async query({ query, format = ClickHouseFormat.RowBinaryWithNamesAndTypes, timeout = 30000 }: QueryOptions): Promise<QueryResult> {
+    if (window.electronAPI) {
+      const startTime = performance.now();
+      const buffer = await window.electronAPI.executeQuery({ query, format });
+      return { data: new Uint8Array(buffer), timing: performance.now() - startTime };
+    }
+
     const startTime = performance.now();
 
     const controller = new AbortController();

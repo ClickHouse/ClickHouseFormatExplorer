@@ -1,8 +1,10 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../store/store';
 import { DEFAULT_QUERY } from '../core/clickhouse/client';
 import { ClickHouseFormat, FORMAT_METADATA } from '../core/types/formats';
 import { encodeBase64Url } from '../core/base64url';
+
+const isElectron = !!window.electronAPI;
 
 export function QueryInput() {
   const query = useStore((s) => s.query);
@@ -17,6 +19,22 @@ export function QueryInput() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [shareLabel, setShareLabel] = useState('Share');
+  const [hostUrl, setHostUrl] = useState('http://localhost:8123');
+
+  // Load connection config in Electron mode
+  useEffect(() => {
+    if (isElectron) {
+      window.electronAPI!.getConfig().then((c) => setHostUrl(c.host));
+    }
+  }, []);
+
+  const handleHostChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setHostUrl(value);
+    if (isElectron) {
+      window.electronAPI!.saveConfig({ host: value });
+    }
+  }, []);
 
   const handleShare = useCallback(() => {
     const url = new URL(window.location.href);
@@ -72,6 +90,22 @@ export function QueryInput() {
     <div className="query-input">
       <div className="query-input-header">
         <span className="query-input-title">SQL Query</span>
+        {isElectron && (
+          <div className="query-host-selector">
+            <label htmlFor="host-input" className="query-format-label">
+              Host:
+            </label>
+            <input
+              id="host-input"
+              className="query-host-input"
+              type="text"
+              value={hostUrl}
+              onChange={handleHostChange}
+              placeholder="http://localhost:8123"
+              disabled={isLoading}
+            />
+          </div>
+        )}
         <div className="query-format-selector">
           <label htmlFor="format-select" className="query-format-label">
             Format:
@@ -106,9 +140,11 @@ export function QueryInput() {
           >
             Upload
           </button>
-          <button className="query-btn secondary" onClick={handleShare} title="Copy shareable URL to clipboard">
-            {shareLabel}
-          </button>
+          {!isElectron && (
+            <button className="query-btn secondary" onClick={handleShare} title="Copy shareable URL to clipboard">
+              {shareLabel}
+            </button>
+          )}
           <button className="query-btn secondary" onClick={handleReset} disabled={isLoading}>
             Reset
           </button>
