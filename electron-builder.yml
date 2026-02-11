@@ -1,0 +1,24 @@
+appId: com.clickhouse.format-explorer
+productName: ClickHouse Format Explorer
+directories:
+  buildResources: build
+  output: release
+files:
+  - dist/**/*
+  - dist-electron/**/*
+extraResources:
+  - from: config.default.json
+    to: ../config.json
+win:
+  icon: build/icon.ico
+  target:
+    - nsis
+mac:
+  icon: build/icon.icns
+  target:
+    - dmg
+linux:
+  icon: build/icon.png
+  target:
+    - AppImage
+    - deb

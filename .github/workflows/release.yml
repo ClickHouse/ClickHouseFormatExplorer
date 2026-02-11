@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. v0.1.0)'
+        required: true
+        type: string
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web + Electron
+        run: npx vite build
+        env:
+          ELECTRON: 'true'
+
+      - name: Package desktop app
+        run: npx electron-builder --${{ matrix.platform }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.platform }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.AppImage
+            release/*.deb
+          if-no-files-found: ignore
+
+  github_release:
+    runs-on: ubuntu-latest
+    needs: [build]
+    name: Create GitHub release
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          artifacts: "artifacts/*"
+          tag: ${{ inputs.version }}
+          commit: ${{ github.sha }}
+          generateReleaseNotes: true
+          draft: false
+          prerelease: false

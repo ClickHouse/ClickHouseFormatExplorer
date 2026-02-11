@@ -3,6 +3,11 @@ node_modules/
 
 # Build output
 dist/
+dist-electron/
+release/
+
+# Local config (template is config.default.json)
+config.json
 
 # Vite
 *.local

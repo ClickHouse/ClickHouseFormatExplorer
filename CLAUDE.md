@@ -1,8 +1,8 @@
-# CLAUDE.md - RowBinary Visualizer
+# CLAUDE.md - ClickHouse Format Explorer
 
 ## Project Overview
 
-A web-based tool for visualizing ClickHouse RowBinary wire format data. Features an interactive hex viewer with AST-based type visualization, similar to ImHex. The tool queries a local ClickHouse database and presents the raw binary data alongside a decoded AST tree with bidirectional highlighting.
+A tool for visualizing ClickHouse RowBinary and Native wire format data. Features an interactive hex viewer with AST-based type visualization, similar to ImHex. Available as a web app (Docker) or an Electron desktop app that connects to your existing ClickHouse server.
 
 **Current scope**: RowBinaryWithNamesAndTypes and Native formats.
 
@@ -11,16 +11,22 @@ A web-based tool for visualizing ClickHouse RowBinary wire format data. Features
 - **Frontend**: React 18 + TypeScript + Vite
 - **State**: Zustand
 - **UI**: react-window (virtualized hex viewer), react-resizable-panels (split panes)
-- **Testing**: Vitest + testcontainers (ClickHouse integration tests)
-- **Deployment**: Docker (bundles ClickHouse + nginx + built frontend)
+- **Desktop**: Electron (optional, connects to user's ClickHouse)
+- **Testing**: Vitest + testcontainers (integration), Playwright (Electron e2e)
+- **Deployment**: Docker (bundles ClickHouse + nginx) or Electron desktop app
 
 ## Commands
 
 ```bash
-npm run dev       # Start dev server (requires ClickHouse at localhost:8123)
-npm run build     # Build for production
-npm run test      # Run integration tests (uses testcontainers)
-npm run lint      # ESLint check
+npm run dev             # Start web dev server (requires ClickHouse at localhost:8123)
+npm run build           # Build web app for production
+npm run test            # Run integration tests (uses testcontainers)
+npm run lint            # ESLint check
+npm run test:e2e        # Build Electron + run Playwright e2e tests
+
+# Electron desktop app
+npm run electron:dev    # Dev mode with hot reload
+npm run electron:build  # Package desktop installer for current platform
 
 # Docker (self-contained with bundled ClickHouse)
 docker build -t rowbinary-explorer .
@@ -33,7 +39,7 @@ docker run -d -p 8080:80 rowbinary-explorer
 src/
 ├── components/           # React components
 │   ├── App.tsx           # Main layout with resizable panels
-│   ├── QueryInput.tsx    # SQL query input + run button
+│   ├── QueryInput.tsx    # SQL query input + run button + connection settings
 │   ├── HexViewer/        # Virtualized hex viewer with highlighting
 │   └── AstTree/          # Collapsible AST tree view
 ├── core/
@@ -52,10 +58,15 @@ src/
 │   │   ├── type-lexer.ts   # Tokenizer for type strings
 │   │   └── type-parser.ts  # Parser: string -> ClickHouseType
 │   └── clickhouse/
-│       └── client.ts     # HTTP client for ClickHouse queries
+│       └── client.ts     # HTTP client (fetch for web, IPC for Electron)
 ├── store/
 │   └── store.ts          # Zustand store (query, parsed data, UI state)
 └── styles/               # CSS files
+electron/
+├── main.ts               # Electron main process (window, IPC handlers)
+└── preload.ts            # Preload script (contextBridge → electronAPI)
+e2e/
+└── electron.spec.ts      # Playwright Electron e2e tests
 docs/
 ├── rowbinaryspec.md      # RowBinary wire format specification
 ├── nativespec.md         # Native wire format specification
@@ -94,13 +105,33 @@ A discriminated union representing all ClickHouse types (`src/core/types/clickho
 
 ### Decoding Flow
 1. User enters SQL query, clicks "Run Query"
-2. `ClickHouseClient` (`src/core/clickhouse/client.ts`) POSTs query with selected format
+2. `ClickHouseClient` (`src/core/clickhouse/client.ts`) sends query:
+   - **Web mode**: `fetch()` via Vite proxy or nginx
+   - **Electron mode**: IPC to main process → `fetch()` to ClickHouse (no CORS)
 3. Decoder parses the binary response:
    - **RowBinary** (`rowbinary-decoder.ts`): Row-oriented, header + rows
    - **Native** (`native-decoder.ts`): Column-oriented with blocks
 4. Type strings parsed via `parseType()` into `ClickHouseType`
 5. Each decoded value returns an `AstNode` with byte tracking
 6. UI renders hex view (left) and AST tree (right)
+
+### Electron Architecture
+```
+Renderer (React)               Main Process (Node.js)
+  │                                │
+  ├─ window.electronAPI            │
+  │   .executeQuery(opts) ────────►├─ fetch(clickhouseUrl + query)
+  │                                │   → ArrayBuffer
+  │◄── IPC response ──────────────┤
+  │                                │
+  ├─ Uint8Array → decoders         │
+  └─ render hex view + AST tree    │
+```
+
+- Runtime detection: `window.electronAPI` exists → IPC path, otherwise → `fetch()`
+- `vite-plugin-electron` activates only when `ELECTRON=true` env var is set
+- Connection config in `config.json` (project root in dev, next to executable in prod)
+- Experimental ClickHouse settings (Variant, Dynamic, JSON, etc.) sent as query params
 
 ### Interactive Highlighting
 - Click a node in AST tree → highlights corresponding bytes in hex view
@@ -133,12 +164,13 @@ A discriminated union representing all ClickHouse types (`src/core/types/clickho
 
 ## Testing
 
-Integration tests use testcontainers to spin up a real ClickHouse instance:
+### Integration Tests (Vitest + testcontainers)
+
+Tests use testcontainers to spin up a real ClickHouse instance:
 ```bash
 npm run test  # Runs all integration tests
 ```
 
-### Test Structure
 Tests are organized into three categories with shared test case definitions:
 
 1. **Smoke Tests** (`smoke.integration.test.ts`)
@@ -154,6 +186,18 @@ Tests are organized into three categories with shared test case definitions:
 3. **Coverage Tests** (`coverage.integration.test.ts`)
    - Analyze byte coverage of AST leaf nodes
    - Report uncovered byte ranges
+
+### Electron e2e Tests (Playwright)
+
+```bash
+npm run test:e2e  # Builds Electron app + runs Playwright tests
+```
+
+Tests in `e2e/electron.spec.ts` launch the actual Electron app and verify:
+- App window opens and UI renders
+- Host input is visible (Electron mode) and Share button is hidden
+- Connection settings can be edited
+- Upload button is present and functional
 
 ### Test Case Interface
 ```typescript

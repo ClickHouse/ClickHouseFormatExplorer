@@ -1,6 +1,6 @@
 # ClickHouse Format Explorer
 
-A web-based tool for visualizing ClickHouse RowBinary and Native format data. Features an interactive hex viewer with AST-based type visualization.
+A tool for visualizing ClickHouse RowBinary and Native format data. Features an interactive hex viewer with AST-based type visualization. Available as a web app or Electron desktop app.
 
 ![Screenshot](.static/screenshot.png)
 
@@ -11,6 +11,7 @@ A web-based tool for visualizing ClickHouse RowBinary and Native format data. Fe
 - **AST Tree**: Collapsible tree view showing decoded structure
 - **Interactive Highlighting**: Selecting a node in the tree highlights corresponding bytes in the hex view (and vice versa)
 - **Full Type Support**: All ClickHouse types including Variant, Dynamic, JSON, Geo types, Nested, etc.
+- **Desktop App**: Electron app that connects to your existing ClickHouse server (no bundled DB)
 
 ## Quick Start (Docker)
 
@@ -23,9 +24,39 @@ docker run -d -p 8080:80 rowbinary-explorer
 
 Open http://localhost:8080
 
-## Development Setup
+## Desktop App
 
-For local development (requires ClickHouse at `localhost:8123`):
+For developers who already run ClickHouse locally. Download the latest release for your platform from the [Releases](../../releases) page:
+
+| Platform | Format |
+|----------|--------|
+| Windows  | `.exe` (NSIS installer) |
+| macOS    | `.dmg` |
+| Linux    | `.AppImage` / `.deb` |
+
+### Configuration
+
+The app looks for a `config.json` file next to the executable:
+
+```json
+{
+  "host": "http://localhost:8123"
+}
+```
+
+You can also change the host from the **Host** field in the toolbar. Changes are saved back to `config.json`.
+
+### Building from source
+
+```bash
+npm install
+npm run electron:dev    # Dev mode with hot reload
+npm run electron:build  # Package installer for current platform
+```
+
+## Web Development Setup
+
+For local web development (requires ClickHouse at `localhost:8123`):
 
 ```bash
 npm install
@@ -37,7 +68,7 @@ Open http://localhost:5173
 ## Usage
 
 1. Enter a SQL query in the input box
-2. Click "Run Query" to fetch data from ClickHouse (expects local instance at `localhost:8123`)
+2. Click "Execute" to fetch data from ClickHouse
 3. Explore the parsed data:
    - Click nodes in the AST tree to highlight bytes
    - Click bytes in the hex viewer to select the corresponding node
@@ -66,3 +97,5 @@ SELECT '{"user": {"id": 123}}'::JSON(`user.id` UInt32)
 - Zustand (state management)
 - react-window (virtualized hex viewer)
 - react-resizable-panels (split pane layout)
+- Electron (desktop app, optional)
+- Playwright (e2e testing)

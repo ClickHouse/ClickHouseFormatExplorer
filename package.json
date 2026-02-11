@@ -3,13 +3,17 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
+  "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "eslint . && tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "electron:dev": "ELECTRON=true vite dev",
+    "electron:build": "ELECTRON=true vite build && electron-builder",
+    "test:e2e": "ELECTRON=true vite build && npx playwright test"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -20,11 +24,14 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
+    "@playwright/test": "^1.58.2",
     "@testcontainers/clickhouse": "^11.11.0",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@types/react-window": "^1.8.8",
     "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^40.3.0",
+    "electron-builder": "^26.7.0",
     "eslint": "^9.17.0",
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.16",
@@ -33,6 +40,8 @@
     "typescript": "~5.6.2",
     "typescript-eslint": "^8.18.2",
     "vite": "^6.0.5",
+    "vite-plugin-electron": "^0.29.0",
+    "vite-plugin-electron-renderer": "^0.14.6",
     "vitest": "^4.0.17"
   }
 }
