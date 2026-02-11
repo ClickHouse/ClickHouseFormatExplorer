@@ -5,5 +5,6 @@ export default defineConfig({
     testTimeout: 60000,
     hookTimeout: 120000,
     pool: 'forks',
+    exclude: ['e2e/**', 'node_modules/**'],
   },
 });
