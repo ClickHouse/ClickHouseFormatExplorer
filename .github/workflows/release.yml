@@ -40,9 +40,7 @@ jobs:
           ELECTRON: 'true'
 
       - name: Package desktop app
-        run: npx electron-builder --${{ matrix.platform }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --${{ matrix.platform }} --publish never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
