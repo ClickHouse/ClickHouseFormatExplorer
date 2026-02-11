@@ -5,12 +5,12 @@ import fs from 'node:fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// config.json lives next to the app:
+// Config paths:
 //   dev  → project root (process.cwd()), falls back to config.default.json
-//   prod → next to the executable (shipped from config.default.json)
-const appDir = app.isPackaged ? path.dirname(process.execPath) : process.cwd();
-const configPath = path.join(appDir, 'config.json');
-const defaultConfigPath = path.join(appDir, 'config.default.json');
+//   prod → extraResources dir (Contents/Resources on macOS, resources/ on Linux/Windows)
+const configDir = app.isPackaged ? process.resourcesPath : process.cwd();
+const configPath = path.join(configDir, 'config.json');
+const defaultConfigPath = path.join(configDir, 'config.default.json');
 
 interface Config {
   host: string;

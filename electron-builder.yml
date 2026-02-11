@@ -8,7 +8,7 @@ files:
   - dist-electron/**/*
 extraResources:
   - from: config.default.json
-    to: ../config.json
+    to: config.json
 win:
   icon: build/icon.ico
   target:
