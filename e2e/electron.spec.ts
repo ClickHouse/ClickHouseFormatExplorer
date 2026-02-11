@@ -6,9 +6,13 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mainPath = path.join(__dirname, '..', 'dist-electron', 'main.js');
 
+// CI environments lack the SUID sandbox setup required by Chromium
+const isCI = !!process.env.CI;
+const launchArgs = isCI ? ['--no-sandbox', mainPath] : [mainPath];
+
 test.describe('Electron app', () => {
   test('launches and renders the UI', async () => {
-    const app = await electron.launch({ args: [mainPath] });
+    const app = await electron.launch({ args: launchArgs });
     const window = await app.firstWindow();
 
     // Wait for the app to render
@@ -36,7 +40,7 @@ test.describe('Electron app', () => {
   });
 
   test('loads config.json and allows editing host', async () => {
-    const app = await electron.launch({ args: [mainPath] });
+    const app = await electron.launch({ args: launchArgs });
     const window = await app.firstWindow();
 
     await window.waitForSelector('#host-input', { timeout: 10000 });
@@ -55,7 +59,7 @@ test.describe('Electron app', () => {
   });
 
   test('upload button is functional', async () => {
-    const app = await electron.launch({ args: [mainPath] });
+    const app = await electron.launch({ args: launchArgs });
     const window = await app.firstWindow();
 
     await window.waitForSelector('.query-input-title', { timeout: 10000 });
