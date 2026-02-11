@@ -20,11 +20,15 @@ export function QueryInput() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [shareLabel, setShareLabel] = useState('Share');
   const [hostUrl, setHostUrl] = useState('http://localhost:8123');
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   // Load connection config in Electron mode
   useEffect(() => {
     if (isElectron) {
-      window.electronAPI!.getConfig().then((c) => setHostUrl(c.host));
+      window.electronAPI!.getConfig().then(
+        (c) => setHostUrl(c.host),
+        () => {/* use default */}
+      );
     }
   }, []);
 
@@ -32,7 +36,10 @@ export function QueryInput() {
     const value = e.target.value;
     setHostUrl(value);
     if (isElectron) {
-      window.electronAPI!.saveConfig({ host: value });
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => {
+        window.electronAPI!.saveConfig({ host: value });
+      }, 500);
     }
   }, []);
 

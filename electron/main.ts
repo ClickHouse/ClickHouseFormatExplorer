@@ -6,11 +6,11 @@ import fs from 'node:fs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // config.json lives next to the app:
-//   dev  → project root (process.cwd())
-//   prod → next to the executable
-const configPath = app.isPackaged
-  ? path.join(path.dirname(process.execPath), 'config.json')
-  : path.join(process.cwd(), 'config.json');
+//   dev  → project root (process.cwd()), falls back to config.default.json
+//   prod → next to the executable (shipped from config.default.json)
+const appDir = app.isPackaged ? path.dirname(process.execPath) : process.cwd();
+const configPath = path.join(appDir, 'config.json');
+const defaultConfigPath = path.join(appDir, 'config.default.json');
 
 interface Config {
   host: string;
@@ -19,11 +19,12 @@ interface Config {
 const DEFAULT_CONFIG: Config = { host: 'http://localhost:8123' };
 
 function loadConfig(): Config {
-  try {
-    return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(configPath, 'utf-8')) };
-  } catch {
-    return { ...DEFAULT_CONFIG };
+  for (const p of [configPath, defaultConfigPath]) {
+    try {
+      return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(p, 'utf-8')) };
+    } catch { /* try next */ }
   }
+  return { ...DEFAULT_CONFIG };
 }
 
 function saveConfig(config: Config): void {
@@ -41,9 +42,14 @@ const CLICKHOUSE_SETTINGS: Record<string, string> = {
 };
 
 function createWindow(): void {
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'build', 'icon.png')
+    : path.join(process.cwd(), 'build', 'icon.png');
+
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

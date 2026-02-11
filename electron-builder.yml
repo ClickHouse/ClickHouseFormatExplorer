@@ -7,15 +7,18 @@ files:
   - dist/**/*
   - dist-electron/**/*
 extraResources:
-  - from: config.json
+  - from: config.default.json
     to: ../config.json
 win:
+  icon: build/icon.ico
   target:
     - nsis
 mac:
+  icon: build/icon.icns
   target:
     - dmg
 linux:
+  icon: build/icon.png
   target:
     - AppImage
     - deb

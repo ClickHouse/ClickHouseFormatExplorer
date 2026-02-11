@@ -43,7 +43,12 @@ export class ClickHouseClient {
   async query({ query, format = ClickHouseFormat.RowBinaryWithNamesAndTypes, timeout = 30000 }: QueryOptions): Promise<QueryResult> {
     if (window.electronAPI) {
       const startTime = performance.now();
-      const buffer = await window.electronAPI.executeQuery({ query, format });
+      const buffer = await Promise.race([
+        window.electronAPI.executeQuery({ query, format }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`Query timeout after ${timeout}ms`)), timeout)
+        ),
+      ]);
       return { data: new Uint8Array(buffer), timing: performance.now() - startTime };
     }
 
