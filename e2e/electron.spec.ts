@@ -23,6 +23,7 @@ test.describe('Electron app', () => {
     await expect(window.locator('.query-textarea')).toBeVisible();
     await expect(window.locator('.query-btn.primary')).toBeVisible();
     await expect(window.locator('#format-select')).toBeVisible();
+    await expect(window.locator('#protocol-version-select')).toHaveCount(0);
 
     // In Electron mode, the host input should be visible and Share button hidden
     await expect(window.locator('#host-input')).toBeVisible();
@@ -31,6 +32,10 @@ test.describe('Electron app', () => {
     // Share button should not exist in Electron mode
     const shareButtons = window.locator('button', { hasText: 'Share' });
     await expect(shareButtons).toHaveCount(0);
+
+    await window.locator('#format-select').selectOption('Native');
+    await expect(window.locator('#protocol-version-select')).toBeVisible();
+    await expect(window.locator('#protocol-version-select')).toHaveValue('0');
 
     // Verify the window title
     const title = await window.title();

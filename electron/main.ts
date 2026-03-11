@@ -2,6 +2,8 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+import { appendClickHouseRequestParams } from '../src/core/clickhouse/request-params';
+import { DEFAULT_NATIVE_PROTOCOL_VERSION } from '../src/core/types/native-protocol';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -66,12 +68,14 @@ function createWindow(): void {
 }
 
 // IPC: Execute a ClickHouse query
-ipcMain.handle('execute-query', async (_event, options: { query: string; format: string }) => {
+ipcMain.handle('execute-query', async (_event, options: { query: string; format: string; nativeProtocolVersion?: number }) => {
   const config = loadConfig();
-  const params = new URLSearchParams({
-    default_format: options.format,
-    ...CLICKHOUSE_SETTINGS,
-  });
+  const params = new URLSearchParams(CLICKHOUSE_SETTINGS);
+  appendClickHouseRequestParams(
+    params,
+    options.format,
+    options.nativeProtocolVersion ?? DEFAULT_NATIVE_PROTOCOL_VERSION
+  );
 
   const response = await fetch(`${config.host}/?${params}`, {
     method: 'POST',

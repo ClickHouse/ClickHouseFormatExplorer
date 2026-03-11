@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  executeQuery: (options: { query: string; format: string }): Promise<ArrayBuffer> =>
+  executeQuery: (options: { query: string; format: string; nativeProtocolVersion?: number }): Promise<ArrayBuffer> =>
     ipcRenderer.invoke('execute-query', options),
   getConfig: (): Promise<{ host: string }> =>
     ipcRenderer.invoke('get-config'),

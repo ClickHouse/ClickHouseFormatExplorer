@@ -419,7 +419,7 @@ export function AstTree() {
                       setActiveNode(blockHeaderId, 'Block metadata (Header)');
                       toggleExpanded(blockHeaderId);
                     }}
-                    onDoubleClick={() => scrollToHex(block.header.numColumnsRange.start)}
+                    onDoubleClick={() => scrollToHex(block.header.byteRange.start)}
                     onMouseEnter={() => setHoveredNode(blockHeaderId)}
                     onMouseLeave={() => setHoveredNode(null)}
                     style={{ '--depth': 1 } as React.CSSProperties}
@@ -428,12 +428,53 @@ export function AstTree() {
                     <span className="ast-metadata-badge">Header</span>
                     <span className="ast-metadata-label">Block metadata</span>
                     <span className="ast-metadata-bytes">
-                      [{block.header.numColumnsRange.start}:{block.header.numRowsRange.end}] (
-                      {block.header.numRowsRange.end - block.header.numColumnsRange.start}B)
+                      [{block.header.byteRange.start}:{block.header.byteRange.end}] (
+                      {block.header.byteRange.end - block.header.byteRange.start}B)
                     </span>
                   </div>
                   {isHeaderExpanded && (
                     <div className="ast-children">
+                      {block.header.blockInfo && (
+                        <div className="ast-metadata-section">
+                          <div
+                            className={`ast-metadata-header ${activeNodeId === `block-${blockIndex}-blockinfo` ? 'active' : ''} ${hoveredNodeId === `block-${blockIndex}-blockinfo` ? 'hovered' : ''}`}
+                            onClick={() => setActiveNode(`block-${blockIndex}-blockinfo`, 'BlockInfo')}
+                            onDoubleClick={() => scrollToHex(block.header.blockInfo!.byteRange.start)}
+                            onMouseEnter={() => setHoveredNode(`block-${blockIndex}-blockinfo`)}
+                            onMouseLeave={() => setHoveredNode(null)}
+                            style={{ '--depth': 2 } as React.CSSProperties}
+                          >
+                            <span className="ast-metadata-badge">BlockInfo</span>
+                            <span className="ast-metadata-label">Field-based metadata</span>
+                            <span className="ast-metadata-bytes">
+                              [{block.header.blockInfo.byteRange.start}:{block.header.blockInfo.byteRange.end}] (
+                              {block.header.blockInfo.byteRange.end - block.header.blockInfo.byteRange.start}B)
+                            </span>
+                          </div>
+                          {block.header.blockInfo.fields.map((field) => {
+                            const fieldId = `block-${blockIndex}-blockinfo-field-${field.fieldNumber}`;
+                            return (
+                              <div
+                                key={fieldId}
+                                className={`ast-metadata-item ${activeNodeId === fieldId ? 'active' : ''} ${hoveredNodeId === fieldId ? 'hovered' : ''}`}
+                                style={{ '--depth': 3 } as React.CSSProperties}
+                                onClick={() => setActiveNode(fieldId, `${field.fieldName}: ${field.displayValue}`)}
+                                onDoubleClick={() => scrollToHex(field.byteRange.start)}
+                                onMouseEnter={() => setHoveredNode(fieldId)}
+                                onMouseLeave={() => setHoveredNode(null)}
+                              >
+                                <span className="ast-metadata-badge">Field {field.fieldNumber}</span>
+                                <span className="ast-metadata-label">{field.fieldName}:</span>
+                                <span className="ast-metadata-value">{field.displayValue}</span>
+                                <span className="ast-metadata-bytes">
+                                  [{field.byteRange.start}:{field.byteRange.end}] (
+                                  {field.byteRange.end - field.byteRange.start}B)
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                       <div
                         className={`ast-metadata-item ${activeNodeId === numColsId ? 'active' : ''} ${hoveredNodeId === numColsId ? 'hovered' : ''}`}
                         style={{ '--depth': 2 } as React.CSSProperties}
@@ -525,8 +566,8 @@ export function AstTree() {
                               <span className="ast-metadata-badge">Meta</span>
                               <span className="ast-metadata-label">Column definition</span>
                               <span className="ast-metadata-bytes">
-                                [{col.nameByteRange.start}:{col.typeByteRange.end}] (
-                                {col.typeByteRange.end - col.nameByteRange.start}B)
+                                [{col.metadataByteRange.start}:{col.metadataByteRange.end}] (
+                                {col.metadataByteRange.end - col.metadataByteRange.start}B)
                               </span>
                             </div>
                             {isColMetaExpanded && (
@@ -563,6 +604,66 @@ export function AstTree() {
                                     {col.typeByteRange.end - col.typeByteRange.start}B)
                                   </span>
                                 </div>
+                                {col.serializationInfo && (
+                                  <>
+                                    <div
+                                      className={`ast-metadata-item ${activeNodeId === `${col.id}-serialization` ? 'active' : ''} ${hoveredNodeId === `${col.id}-serialization` ? 'hovered' : ''}`}
+                                      style={{ '--depth': 3 } as React.CSSProperties}
+                                      onClick={() => setActiveNode(`${col.id}-serialization`, 'Serialization info')}
+                                      onDoubleClick={() => scrollToHex(col.serializationInfo!.byteRange.start)}
+                                      onMouseEnter={() => setHoveredNode(`${col.id}-serialization`)}
+                                      onMouseLeave={() => setHoveredNode(null)}
+                                    >
+                                      <span className="ast-metadata-badge">Meta</span>
+                                      <span className="ast-metadata-label">serialization:</span>
+                                      <span className="ast-metadata-value">
+                                        {col.serializationInfo.hasCustomSerialization ? 'custom' : 'default'}
+                                      </span>
+                                      <span className="ast-metadata-bytes">
+                                        [{col.serializationInfo.byteRange.start}:{col.serializationInfo.byteRange.end}] (
+                                        {col.serializationInfo.byteRange.end - col.serializationInfo.byteRange.start}B)
+                                      </span>
+                                    </div>
+                                    <div
+                                      className={`ast-metadata-item ${activeNodeId === `${col.id}-serialization-has-custom` ? 'active' : ''} ${hoveredNodeId === `${col.id}-serialization-has-custom` ? 'hovered' : ''}`}
+                                      style={{ '--depth': 3 } as React.CSSProperties}
+                                      onClick={() => setActiveNode(`${col.id}-serialization-has-custom`, `has_custom: ${col.serializationInfo!.hasCustomSerialization}`)}
+                                      onDoubleClick={() => scrollToHex(col.serializationInfo!.hasCustomRange.start)}
+                                      onMouseEnter={() => setHoveredNode(`${col.id}-serialization-has-custom`)}
+                                      onMouseLeave={() => setHoveredNode(null)}
+                                    >
+                                      <span className="ast-metadata-badge">UInt8</span>
+                                      <span className="ast-metadata-label">has_custom:</span>
+                                      <span className="ast-metadata-value">
+                                        {col.serializationInfo.hasCustomSerialization ? '1' : '0'}
+                                      </span>
+                                      <span className="ast-metadata-bytes">
+                                        [{col.serializationInfo.hasCustomRange.start}:{col.serializationInfo.hasCustomRange.end}] (
+                                        {col.serializationInfo.hasCustomRange.end - col.serializationInfo.hasCustomRange.start}B)
+                                      </span>
+                                    </div>
+                                    {col.serializationInfo.kindStackRange && (
+                                      <div
+                                        className={`ast-metadata-item ${activeNodeId === `${col.id}-serialization-kinds` ? 'active' : ''} ${hoveredNodeId === `${col.id}-serialization-kinds` ? 'hovered' : ''}`}
+                                        style={{ '--depth': 3 } as React.CSSProperties}
+                                        onClick={() => setActiveNode(`${col.id}-serialization-kinds`, `kind stack: ${col.serializationInfo!.kindStack.join(' -> ')}`)}
+                                        onDoubleClick={() => scrollToHex(col.serializationInfo!.kindStackRange!.start)}
+                                        onMouseEnter={() => setHoveredNode(`${col.id}-serialization-kinds`)}
+                                        onMouseLeave={() => setHoveredNode(null)}
+                                      >
+                                        <span className="ast-metadata-badge">Kinds</span>
+                                        <span className="ast-metadata-label">kindStack:</span>
+                                        <span className="ast-metadata-value">
+                                          {col.serializationInfo.kindStack.join(' -> ')}
+                                        </span>
+                                        <span className="ast-metadata-bytes">
+                                          [{col.serializationInfo.kindStackRange.start}:{col.serializationInfo.kindStackRange.end}] (
+                                          {col.serializationInfo.kindStackRange.end - col.serializationInfo.kindStackRange.start}B)
+                                        </span>
+                                      </div>
+                                    )}
+                                  </>
+                                )}
                               </div>
                             )}
                           </div>

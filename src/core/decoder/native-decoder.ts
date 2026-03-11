@@ -1,9 +1,24 @@
 import { FormatDecoder } from './format-decoder';
-import { decodeLEB128 } from './leb128';
+import { decodeLEB128, decodeLEB128BigInt } from './leb128';
 import { parseType } from '../parser/type-parser';
 import { ClickHouseType, typeToString } from '../types/clickhouse-types';
-import { AstNode, BlockColumnNode, BlockHeaderNode, BlockNode, ByteRange, ColumnDefinition, HeaderNode, ParsedData } from '../types/ast';
+import {
+  AstNode,
+  BlockColumnNode,
+  BlockHeaderNode,
+  BlockNode,
+  ByteRange,
+  ColumnDefinition,
+  HeaderNode,
+  NativeBlockInfo,
+  NativeBlockInfoField,
+  NativeSerializationInfo,
+  ParsedData,
+} from '../types/ast';
 import { ClickHouseFormat } from '../types/formats';
+
+const SPARSE_END_OF_GRANULE_FLAG = 1n << 62n;
+const TEXT_DECODER = new TextDecoder();
 
 /**
  * Native format decoder (column-oriented with blocks)
@@ -20,6 +35,12 @@ import { ClickHouseFormat } from '../types/formats';
  */
 export class NativeDecoder extends FormatDecoder {
   readonly format = ClickHouseFormat.Native;
+  private readonly protocolVersion: number;
+
+  constructor(data: Uint8Array, protocolVersion: number = 0) {
+    super(data);
+    this.protocolVersion = protocolVersion;
+  }
 
   decode(): ParsedData {
     const blocks = this.decodeBlocks();
@@ -54,6 +75,7 @@ export class NativeDecoder extends FormatDecoder {
 
   private decodeBlock(index: number): BlockNode {
     const startOffset = this.reader.offset;
+    const blockInfo = this.protocolVersion > 0 ? this.decodeBlockInfo() : undefined;
 
     // Read numColumns with byte range tracking
     const numColumnsStart = this.reader.offset;
@@ -66,10 +88,15 @@ export class NativeDecoder extends FormatDecoder {
     const numRowsRange: ByteRange = { start: numRowsStart, end: this.reader.offset };
 
     const header: BlockHeaderNode = {
+      byteRange: {
+        start: blockInfo?.byteRange.start ?? numColumnsRange.start,
+        end: numRowsRange.end,
+      },
       numColumns,
       numColumnsRange,
       numRows,
       numRowsRange,
+      blockInfo,
     };
 
     // Empty block check
@@ -104,20 +131,26 @@ export class NativeDecoder extends FormatDecoder {
     const nameStart = this.reader.offset;
     const { value: nameLen } = decodeLEB128(this.reader);
     const { value: nameBytes } = this.reader.readBytes(nameLen);
-    const name = new TextDecoder().decode(nameBytes);
+    const name = TEXT_DECODER.decode(nameBytes);
     const nameByteRange: ByteRange = { start: nameStart, end: this.reader.offset };
 
     // Read column type
     const typeStart = this.reader.offset;
     const { value: typeLen } = decodeLEB128(this.reader);
     const { value: typeBytes } = this.reader.readBytes(typeLen);
-    const typeString = new TextDecoder().decode(typeBytes);
+    const typeString = TEXT_DECODER.decode(typeBytes);
     const type = parseType(typeString);
     const typeByteRange: ByteRange = { start: typeStart, end: this.reader.offset };
 
+    const serializationInfo = this.decodeSerializationInfo(type);
+    const metadataByteRange: ByteRange = {
+      start: nameByteRange.start,
+      end: serializationInfo?.byteRange.end ?? typeByteRange.end,
+    };
+
     // Read column data
     const dataStart = this.reader.offset;
-    const values = this.decodeColumnData(type, rowCount);
+    const values = this.decodeColumnData(type, rowCount, serializationInfo);
     const dataByteRange: ByteRange = { start: dataStart, end: this.reader.offset };
 
     return {
@@ -127,12 +160,23 @@ export class NativeDecoder extends FormatDecoder {
       type,
       typeString,
       typeByteRange,
+      metadataByteRange,
       dataByteRange,
+      serializationInfo,
       values,
     };
   }
 
-  private decodeColumnData(type: ClickHouseType, rowCount: number): AstNode[] {
+  private decodeColumnData(
+    type: ClickHouseType,
+    rowCount: number,
+    serializationInfo?: NativeSerializationInfo,
+  ): AstNode[] {
+    const kindStack = serializationInfo?.kindStack ?? ['DEFAULT'];
+    return this.decodeColumnDataWithKinds(type, rowCount, kindStack.slice(1));
+  }
+
+  private decodeColumnDataDefault(type: ClickHouseType, rowCount: number): AstNode[] {
     // Handle complex types that have different columnar encoding
     switch (type.kind) {
       case 'Nullable':
@@ -181,6 +225,326 @@ export class NativeDecoder extends FormatDecoder {
       values.push(node);
     }
     return values;
+  }
+
+  private decodeColumnDataWithKinds(type: ClickHouseType, rowCount: number, kinds: string[]): AstNode[] {
+    if (kinds.length === 0) {
+      return this.decodeColumnDataDefault(type, rowCount);
+    }
+
+    const nestedKinds = kinds.slice(0, -1);
+    const outermostKind = kinds[kinds.length - 1];
+
+    switch (outermostKind) {
+      case 'SPARSE':
+        return this.decodeSparseColumn(type, rowCount, nestedKinds);
+      case 'REPLICATED':
+        return this.decodeReplicatedColumn(type, rowCount, nestedKinds);
+      default:
+        throw new Error(
+          `Native format: unsupported serialization kind stack DEFAULT -> ${kinds.join(' -> ')} ` +
+          `for ${typeToString(type)} at protocol version ${this.protocolVersion}`,
+        );
+    }
+  }
+
+  private decodeBlockInfo(): NativeBlockInfo {
+    const start = this.reader.offset;
+    const fields: NativeBlockInfoField[] = [];
+
+    while (true) {
+      const fieldNumberStart = this.reader.offset;
+      const { value: fieldNumber } = decodeLEB128(this.reader);
+      const fieldNumberRange: ByteRange = { start: fieldNumberStart, end: this.reader.offset };
+
+      if (fieldNumber === 0) {
+        return {
+          byteRange: { start, end: this.reader.offset },
+          terminatorRange: fieldNumberRange,
+          fields,
+        };
+      }
+
+      switch (fieldNumber) {
+        case 1: {
+          const { value, range } = this.reader.readUInt8();
+          fields.push({
+            fieldNumber,
+            fieldName: 'is_overflows',
+            value: value !== 0,
+            displayValue: value !== 0 ? 'true' : 'false',
+            fieldNumberRange,
+            valueRange: range,
+            byteRange: { start: fieldNumberRange.start, end: range.end },
+          });
+          break;
+        }
+        case 2: {
+          const { value, range } = this.reader.readInt32LE();
+          fields.push({
+            fieldNumber,
+            fieldName: 'bucket_num',
+            value,
+            displayValue: String(value),
+            fieldNumberRange,
+            valueRange: range,
+            byteRange: { start: fieldNumberRange.start, end: range.end },
+          });
+          break;
+        }
+        case 3: {
+          if (this.protocolVersion < 54480) {
+            throw new Error(
+              `Native format: BlockInfo field 3 requires protocol version 54480+, got ${this.protocolVersion}`,
+            );
+          }
+          const valueStart = this.reader.offset;
+          const { value: size } = decodeLEB128(this.reader);
+          const values: number[] = [];
+          for (let i = 0; i < size; i++) {
+            const { value } = this.reader.readInt32LE();
+            values.push(value);
+          }
+          const valueRange: ByteRange = { start: valueStart, end: this.reader.offset };
+          fields.push({
+            fieldNumber,
+            fieldName: 'out_of_order_buckets',
+            value: values,
+            displayValue: `[${values.join(', ')}]`,
+            fieldNumberRange,
+            valueRange,
+            byteRange: { start: fieldNumberRange.start, end: valueRange.end },
+          });
+          break;
+        }
+        default:
+          throw new Error(`Native format: unknown BlockInfo field ${fieldNumber}`);
+      }
+    }
+  }
+
+  private decodeSerializationInfo(type: ClickHouseType): NativeSerializationInfo | undefined {
+    if (this.protocolVersion < 54454) {
+      return undefined;
+    }
+
+    const start = this.reader.offset;
+    const { value: hasCustomValue, range: hasCustomRange } = this.reader.readUInt8();
+    const hasCustomSerialization = hasCustomValue !== 0;
+    let kindStackRange: ByteRange | undefined;
+    let kindStack = ['DEFAULT'];
+
+    if (hasCustomSerialization) {
+      const kindStackStart = this.reader.offset;
+      kindStack = this.decodeSerializationKindStack(type);
+      kindStackRange = { start: kindStackStart, end: this.reader.offset };
+    }
+
+    return {
+      byteRange: { start, end: this.reader.offset },
+      hasCustomSerialization,
+      hasCustomRange,
+      kindStack,
+      kindStackRange,
+    };
+  }
+
+  private decodeSerializationKindStack(type: ClickHouseType): string[] {
+    const { value: kindType } = this.reader.readUInt8();
+    let kindStack: string[];
+
+    switch (kindType) {
+      case 0:
+        kindStack = ['DEFAULT'];
+        break;
+      case 1:
+        kindStack = ['DEFAULT', 'SPARSE'];
+        break;
+      case 2:
+        kindStack = ['DEFAULT', 'DETACHED'];
+        break;
+      case 3:
+        kindStack = ['DEFAULT', 'SPARSE', 'DETACHED'];
+        break;
+      case 4:
+        kindStack = ['DEFAULT', 'REPLICATED'];
+        break;
+      case 5: {
+        const { value: count } = decodeLEB128(this.reader);
+        kindStack = [];
+        for (let i = 0; i < count; i++) {
+          const { value: rawKind } = this.reader.readUInt8();
+          kindStack.push(this.decodeSerializationKind(rawKind));
+        }
+        break;
+      }
+      default:
+        throw new Error(`Native format: unknown serialization kind type ${kindType}`);
+    }
+
+    if (type.kind === 'Tuple') {
+      type.elements.forEach((element) => {
+        this.decodeSerializationKindStack(element);
+      });
+    }
+
+    return kindStack;
+  }
+
+  private decodeSerializationKind(rawKind: number): string {
+    switch (rawKind) {
+      case 0:
+        return 'DEFAULT';
+      case 1:
+        return 'SPARSE';
+      case 2:
+        return 'DETACHED';
+      case 3:
+        return 'REPLICATED';
+      default:
+        throw new Error(`Native format: unknown serialization kind ${rawKind}`);
+    }
+  }
+
+  private decodeSparseColumn(type: ClickHouseType, rowCount: number, nestedKinds: string[]): AstNode[] {
+    const positions = this.decodeSparsePositions(rowCount);
+
+    if (type.kind === 'Nullable') {
+      if (nestedKinds.length > 0) {
+        throw new Error(
+          `Native format: unsupported serialization kind stack DEFAULT -> ${nestedKinds.join(' -> ')} -> SPARSE ` +
+          `for ${typeToString(type)} at protocol version ${this.protocolVersion}`,
+        );
+      }
+
+      return this.decodeSparseNullableColumn(type.inner, rowCount, positions);
+    }
+
+    const nonDefaultValues = this.decodeColumnDataWithKinds(type, positions.length, nestedKinds);
+    const values: AstNode[] = [];
+    let valueIndex = 0;
+
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+      if (valueIndex < positions.length && positions[valueIndex] === rowIndex) {
+        const node = this.cloneAstNode(nonDefaultValues[valueIndex], `[${rowIndex}]`);
+        node.label = `[${rowIndex}]`;
+        values.push(node);
+        valueIndex++;
+        continue;
+      }
+
+      values.push(this.createDefaultNode(type, rowIndex));
+    }
+
+    return values;
+  }
+
+  private decodeSparseNullableColumn(
+    innerType: ClickHouseType,
+    rowCount: number,
+    nonNullPositions: number[],
+  ): AstNode[] {
+    const nonNullValues = this.decodeColumnDataDefault(innerType, nonNullPositions.length);
+    const values: AstNode[] = [];
+    let valueIndex = 0;
+
+    for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+      if (valueIndex < nonNullPositions.length && nonNullPositions[valueIndex] === rowIndex) {
+        const innerNode = this.cloneAstNode(nonNullValues[valueIndex], 'value');
+        values.push({
+          id: this.generateId(),
+          type: `Nullable(${typeToString(innerType)})`,
+          byteRange: innerNode.byteRange,
+          value: innerNode.value,
+          displayValue: innerNode.displayValue,
+          label: `[${rowIndex}]`,
+          children: [innerNode],
+          metadata: { isNull: false },
+        });
+        valueIndex++;
+        continue;
+      }
+
+      values.push({
+        id: this.generateId(),
+        type: `Nullable(${typeToString(innerType)})`,
+        byteRange: { start: this.reader.offset, end: this.reader.offset },
+        value: null,
+        displayValue: 'NULL',
+        label: `[${rowIndex}]`,
+        metadata: { isNull: true, isDefaultValue: true },
+      });
+    }
+
+    return values;
+  }
+
+  private decodeReplicatedColumn(type: ClickHouseType, rowCount: number, nestedKinds: string[]): AstNode[] {
+    const { value: serializedRowCount } = decodeLEB128(this.reader);
+    if (serializedRowCount !== rowCount) {
+      throw new Error(
+        `Native format: replicated row count ${serializedRowCount} does not match block row count ${rowCount}`,
+      );
+    }
+
+    const { value: indexSize } = this.reader.readUInt8();
+    const indexes: number[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      indexes.push(this.readReplicatedIndex(indexSize));
+    }
+
+    const { value: nestedRowCount } = decodeLEB128(this.reader);
+    const nestedValues = this.decodeColumnDataWithKinds(type, nestedRowCount, nestedKinds);
+
+    return indexes.map((index, rowIndex) => {
+      const sourceNode = nestedValues[index];
+      if (!sourceNode) {
+        throw new Error(`Native format: replicated index ${index} out of bounds for ${nestedValues.length} nested values`);
+      }
+
+      const cloned = this.cloneAstNode(sourceNode, `[${rowIndex}]`);
+      cloned.metadata = {
+        ...(cloned.metadata ?? {}),
+        replicatedIndex: index,
+      };
+      return cloned;
+    });
+  }
+
+  private readReplicatedIndex(indexSize: number): number {
+    switch (indexSize) {
+      case 1:
+        return this.reader.readUInt8().value;
+      case 2:
+        return this.reader.readUInt16LE().value;
+      case 4:
+        return this.reader.readUInt32LE().value;
+      case 8:
+        return Number(this.reader.readUInt64LE().value);
+      default:
+        throw new Error(`Native format: unsupported replicated index size ${indexSize}`);
+    }
+  }
+
+  private decodeSparsePositions(rowCount: number): number[] {
+    const positions: number[] = [];
+    let currentRow = 0;
+
+    while (currentRow <= rowCount) {
+      const { value: rawGroupSize } = decodeLEB128BigInt(this.reader);
+      const endOfGranule = (rawGroupSize & SPARSE_END_OF_GRANULE_FLAG) !== 0n;
+      const groupSize = Number(rawGroupSize & ~SPARSE_END_OF_GRANULE_FLAG);
+      currentRow += groupSize;
+
+      if (!endOfGranule) {
+        positions.push(currentRow);
+        currentRow += 1;
+      } else {
+        break;
+      }
+    }
+
+    return positions;
   }
 
   private decodeValue(type: ClickHouseType): AstNode {
@@ -477,11 +841,75 @@ export class NativeDecoder extends FormatDecoder {
     }));
 
     return {
-      byteRange: { start: 0, end: firstBlock.columns[0]?.dataByteRange.start ?? 0 },
+      byteRange: { start: 0, end: firstBlock.columns[0]?.metadataByteRange.end ?? 0 },
       columnCount: columns.length,
       // For Native format, column count is per-block, use first block's range
       columnCountRange: firstBlock.header.numColumnsRange,
       columns,
+    };
+  }
+
+  private createDefaultNode(type: ClickHouseType, rowIndex: number): AstNode {
+    const typeName = typeToString(type);
+    const byteRange = { start: this.reader.offset, end: this.reader.offset };
+
+    switch (type.kind) {
+      case 'UInt8':
+      case 'UInt16':
+      case 'UInt32':
+      case 'Int8':
+      case 'Int16':
+      case 'Int32':
+      case 'Float32':
+      case 'Float64':
+      case 'BFloat16':
+      case 'Decimal32':
+      case 'Decimal64':
+        return this.createDefaultValueNode(typeName, 0, '0', rowIndex, byteRange);
+      case 'UInt64':
+      case 'UInt128':
+      case 'UInt256':
+      case 'Int64':
+      case 'Int128':
+      case 'Int256':
+      case 'Decimal128':
+      case 'Decimal256':
+        return this.createDefaultValueNode(typeName, 0n, '0', rowIndex, byteRange);
+      case 'Bool':
+        return this.createDefaultValueNode(typeName, false, 'false', rowIndex, byteRange);
+      case 'String':
+      case 'FixedString':
+        return this.createDefaultValueNode(typeName, '', '""', rowIndex, byteRange);
+      default:
+        throw new Error(`Native format: sparse default materialization not supported for ${typeName}`);
+    }
+  }
+
+  private createDefaultValueNode(
+    type: string,
+    value: unknown,
+    displayValue: string,
+    rowIndex: number,
+    byteRange: ByteRange,
+  ): AstNode {
+    return {
+      id: this.generateId(),
+      type,
+      byteRange,
+      value,
+      displayValue,
+      label: `[${rowIndex}]`,
+      metadata: { isDefaultValue: true },
+    };
+  }
+
+  private cloneAstNode(node: AstNode, label?: string): AstNode {
+    return {
+      ...node,
+      id: this.generateId(),
+      label: label ?? node.label,
+      children: node.children?.map((child) => this.cloneAstNode(child, child.label)),
+      metadata: node.metadata ? { ...node.metadata } : undefined,
     };
   }
 

@@ -3,6 +3,10 @@ import { useStore } from '../store/store';
 import { DEFAULT_QUERY } from '../core/clickhouse/client';
 import { ClickHouseFormat, FORMAT_METADATA } from '../core/types/formats';
 import { encodeBase64Url } from '../core/base64url';
+import {
+  DEFAULT_NATIVE_PROTOCOL_VERSION,
+  NATIVE_PROTOCOL_PRESETS,
+} from '../core/types/native-protocol';
 
 const isElectron = !!window.electronAPI;
 
@@ -11,6 +15,8 @@ export function QueryInput() {
   const setQuery = useStore((s) => s.setQuery);
   const format = useStore((s) => s.format);
   const setFormat = useStore((s) => s.setFormat);
+  const nativeProtocolVersion = useStore((s) => s.nativeProtocolVersion);
+  const setNativeProtocolVersion = useStore((s) => s.setNativeProtocolVersion);
   const executeQuery = useStore((s) => s.executeQuery);
   const loadFile = useStore((s) => s.loadFile);
   const isLoading = useStore((s) => s.isLoading);
@@ -48,10 +54,13 @@ export function QueryInput() {
     url.search = '';
     url.searchParams.set('q', encodeBase64Url(query));
     url.searchParams.set('f', format);
+    if (format === ClickHouseFormat.Native && nativeProtocolVersion !== DEFAULT_NATIVE_PROTOCOL_VERSION) {
+      url.searchParams.set('pv', String(nativeProtocolVersion));
+    }
     navigator.clipboard.writeText(url.toString());
     setShareLabel('Copied!');
     setTimeout(() => setShareLabel('Share'), 2000);
-  }, [query, format]);
+  }, [query, format, nativeProtocolVersion]);
 
   const handleExecute = useCallback(() => {
     executeQuery();
@@ -80,6 +89,13 @@ export function QueryInput() {
   const handleUploadClick = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
+
+  const handleProtocolVersionChange = useCallback(
+    (e: React.ChangeEvent<HTMLSelectElement>) => {
+      setNativeProtocolVersion(Number(e.target.value));
+    },
+    [setNativeProtocolVersion]
+  );
 
   const handleFileChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -131,6 +147,27 @@ export function QueryInput() {
             ))}
           </select>
         </div>
+        {format === ClickHouseFormat.Native && (
+          <div className="query-format-selector">
+            <label htmlFor="protocol-version-select" className="query-format-label">
+              Protocol:
+            </label>
+            <select
+              id="protocol-version-select"
+              className="query-format-select"
+              value={nativeProtocolVersion}
+              onChange={handleProtocolVersionChange}
+              disabled={isLoading}
+              title="Native client_protocol_version preset"
+            >
+              {NATIVE_PROTOCOL_PRESETS.map((preset) => (
+                <option key={preset.value} value={preset.value}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div className="query-input-actions">
           <input
             ref={fileInputRef}

@@ -54,10 +54,12 @@ export interface RowNode {
  * Block header metadata (Native format)
  */
 export interface BlockHeaderNode {
+  byteRange: ByteRange;
   numColumns: number;
   numColumnsRange: ByteRange;
   numRows: number;
   numRowsRange: ByteRange;
+  blockInfo?: NativeBlockInfo;
 }
 
 /**
@@ -81,8 +83,34 @@ export interface BlockColumnNode {
   type: import('./clickhouse-types').ClickHouseType;
   typeString: string;
   typeByteRange: ByteRange;
+  metadataByteRange: ByteRange;
   dataByteRange: ByteRange;
+  serializationInfo?: NativeSerializationInfo;
   values: AstNode[];
+}
+
+export interface NativeBlockInfoField {
+  fieldNumber: number;
+  fieldName: string;
+  value: boolean | number | number[];
+  displayValue: string;
+  fieldNumberRange: ByteRange;
+  valueRange: ByteRange;
+  byteRange: ByteRange;
+}
+
+export interface NativeBlockInfo {
+  byteRange: ByteRange;
+  terminatorRange: ByteRange;
+  fields: NativeBlockInfoField[];
+}
+
+export interface NativeSerializationInfo {
+  byteRange: ByteRange;
+  hasCustomSerialization: boolean;
+  hasCustomRange: ByteRange;
+  kindStack: string[];
+  kindStackRange?: ByteRange;
 }
 
 /**
