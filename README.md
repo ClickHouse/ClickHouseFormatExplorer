@@ -7,6 +7,7 @@ A tool for visualizing ClickHouse RowBinary and Native format data. Features an 
 ## Features
 
 - **Format support**: RowBinary and Native, modular system allows adding more
+- **Native protocol version**: Select the Native `client_protocol_version` to inspect revision-specific wire layouts
 - **Hex Viewer**: Virtual-scrolling hex display with ASCII column
 - **AST Tree**: Collapsible tree view showing decoded structure
 - **Interactive Highlighting**: Selecting a node in the tree highlights corresponding bytes in the hex view (and vice versa)
@@ -73,6 +74,7 @@ Open http://localhost:5173
    - Click nodes in the AST tree to highlight bytes
    - Click bytes in the hex viewer to select the corresponding node
    - Use "Expand All" / "Collapse All" to navigate complex structures
+4. When using `Native`, choose a protocol preset to compare legacy HTTP output against newer revisions such as custom serialization, Dynamic/JSON v2, replicated, and nullable sparse encodings
 
 ## Example Queries
 
@@ -91,6 +93,18 @@ SELECT 42::Dynamic
 SELECT '{"user": {"id": 123}}'::JSON(`user.id` UInt32)
 ```
 
+## Native Protocol Versions
+
+The `Native` format toolbar exposes upstream protocol milestones from `0` through `54483`. This controls the `client_protocol_version` request parameter and the local decoder behavior, so the explorer can parse:
+
+- legacy HTTP Native blocks without `BlockInfo` (`0`)
+- per-column serialization metadata (`54454+`)
+- sparse and replicated serialization kinds (`54465+`, `54482+`)
+- Dynamic/JSON v2 Native layouts (`54473+`)
+- nullable sparse serialization (`54483`)
+
+See [docs/native-protocol-versions.md](docs/native-protocol-versions.md) for the revision-by-revision reference, and [docs/nativespec.md](docs/nativespec.md) for the Native layout details.
+
 ## Tech Stack
 
 - React + TypeScript + Vite
@@ -98,4 +112,5 @@ SELECT '{"user": {"id": 123}}'::JSON(`user.id` UInt32)
 - react-window (virtualized hex viewer)
 - react-resizable-panels (split pane layout)
 - Electron (desktop app, optional)
+- Vitest + testcontainers (integration testing)
 - Playwright (e2e testing)

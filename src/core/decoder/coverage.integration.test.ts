@@ -7,6 +7,63 @@ import {
   formatUncoveredRanges,
 } from './test-helpers';
 import { SMOKE_TEST_CASES } from './smoke-cases';
+import { NATIVE_PROTOCOL_PRESETS } from '../types/native-protocol';
+
+interface NativeCoverageMatrixCase {
+  name: string;
+  query: string;
+  settings?: Record<string, string | number>;
+}
+
+const NATIVE_COVERAGE_MATRIX_CASES: NativeCoverageMatrixCase[] = [
+  {
+    name: 'simple UInt8 column',
+    query: 'SELECT number::UInt8 AS val FROM numbers(3)',
+  },
+  {
+    name: 'multiple columns baseline',
+    query: "SELECT 42::UInt32 as int_col, 'hello'::String as str_col, true::Bool as bool_col, 3.14::Float64 as float_col",
+  },
+  {
+    name: 'Array integers',
+    query: 'SELECT [1, 2, 3]::Array(UInt32) as val',
+  },
+  {
+    name: 'Tuple simple',
+    query: "SELECT (42, 'hello')::Tuple(UInt32, String) as val",
+  },
+  {
+    name: 'Map with entries',
+    query: "SELECT map('a', 1, 'b', 2)::Map(String, UInt32) as val",
+  },
+  {
+    name: 'LowCardinality compatibility',
+    query: 'SELECT toLowCardinality(toString(number % 2)) AS val FROM numbers(4)',
+    settings: { allow_suspicious_low_cardinality_types: 1 },
+  },
+  {
+    name: 'AggregateFunction compatibility',
+    query: 'SELECT avgState(number) AS val FROM numbers(10)',
+  },
+  {
+    name: 'serialization metadata gate',
+    query: 'SELECT if(number = 5, 1, 0)::UInt8 AS sparse_val FROM numbers(10)',
+  },
+  {
+    name: 'Nullable serialization metadata gate',
+    query: 'SELECT if(number = 5, 42, NULL)::Nullable(UInt8) AS sparse_nullable FROM numbers(10)',
+  },
+  {
+    name: 'Dynamic serialization version gate',
+    query: 'SELECT 42::Dynamic AS val',
+    settings: { allow_experimental_dynamic_type: 1 },
+  },
+  {
+    name: 'JSON dynamic-path serialization version gate',
+    query: `SELECT '{"ip":"127.0.0.1","name":"test"}'::JSON(ip IPv4) AS val`,
+    settings: { allow_experimental_json_type: 1 },
+  },
+];
 
 /**
  * Byte coverage tests - verify that the AST leaf nodes cover all bytes in the data
@@ -24,19 +81,6 @@ describe('Byte Coverage Tests', () => {
   afterAll(async () => {
     await ctx.stop();
   });
-
-  // Test a representative subset of cases for coverage (used by Native format)
-  const coverageTestCases = SMOKE_TEST_CASES.filter(c =>
-    // Focus on diverse type categories
-    c.name.includes('UInt8') ||
-    c.name.includes('String basic') ||
-    c.name.includes('Array integers') ||
-    c.name.includes('Tuple simple') ||
-    c.name.includes('Map with entries') ||
-    c.name.includes('Nullable non-null') ||
-    c.name.includes('Multiple columns') ||
-    c.name.includes('IntervalSecond')
-  );
 
   describe('RowBinary Format', () => {
     it.each(SMOKE_TEST_CASES)(
@@ -59,53 +103,27 @@ describe('Byte Coverage Tests', () => {
   });
 
   describe('Native Format', () => {
-    it.each(coverageTestCases)(
-      '$name - byte coverage',
-      async ({ query, settings, skipNative }) => {
-        if (skipNative) return;
+    for (const testCase of NATIVE_COVERAGE_MATRIX_CASES) {
+      describe(testCase.name, () => {
+        it.each(NATIVE_PROTOCOL_PRESETS.map((preset) => preset.value))(
+          'revision %s - byte coverage',
+          async (revision) => {
+            const data = await ctx.queryNative(testCase.query, {
+              ...(testCase.settings ?? {}),
+              client_protocol_version: revision,
+            });
+            const parsed = decodeNative(data, revision);
+            const coverage = analyzeByteRange(parsed, data.length);
 
-        const data = await ctx.queryNative(query, settings);
-        const parsed = decodeNative(data);
-        const coverage = analyzeByteRange(parsed, data.length);
+            if (!coverage.isComplete) {
+              const details = formatUncoveredRanges(coverage, data);
+              console.log(`[Native r${revision}] ${testCase.query}\n${details}`);
+            }
 
-        if (!coverage.isComplete) {
-          const details = formatUncoveredRanges(coverage, data);
-          console.log(`[Native] ${query}\n${details}`);
-        }
-
-        // Native format has block headers that may not be fully covered
-        expect(coverage.coveragePercent).toBeGreaterThan(70);
-      },
-    );
-  });
-
-  describe('Full Coverage Sanity Checks', () => {
-    it('simple UInt8 value has reasonable coverage (RowBinary)', async () => {
-      const data = await ctx.queryRowBinary('SELECT 42::UInt8 as val');
-      const parsed = decodeRowBinary(data);
-      const coverage = analyzeByteRange(parsed, data.length);
-
-      // Should cover most of the data
-      expect(coverage.coveragePercent).toBeGreaterThan(50);
-
-      // Log uncovered if any
-      if (!coverage.isComplete) {
-        console.log('Uncovered ranges:', coverage.uncoveredRanges);
-      }
-    });
-
-    it('simple UInt8 value has reasonable coverage (Native)', async () => {
-      const data = await ctx.queryNative('SELECT 42::UInt8 as val');
-      const parsed = decodeNative(data);
-      const coverage = analyzeByteRange(parsed, data.length);
-
-      // Should cover most of the data
-      expect(coverage.coveragePercent).toBeGreaterThan(50);
-
-      // Log uncovered if any
-      if (!coverage.isComplete) {
-        console.log('Uncovered ranges:', coverage.uncoveredRanges);
-      }
-    });
+            expect(coverage.isComplete).toBe(true);
+          },
+        );
+      });
+    }
   });
 }, 300000);
