@@ -31,7 +31,6 @@ function encodeUInt64LE(value: number | bigint): number[] {
   }
   return bytes;
 }
-
 function encodeSparseOffsets(nonDefaultRows: number[], rowCount: number): number[] {
   const END_OF_GRANULE_FLAG = 1n << 62n;
   const bytes: number[] = [];
@@ -61,7 +60,6 @@ function collectNodes(node: unknown): Array<{ type?: string; label?: string; val
   }
   return nodes;
 }
-
 describe('NativeDecoder protocol-aware parsing', () => {
   it('parses legacy HTTP Native blocks without protocol metadata', () => {
     const bytes = new Uint8Array([
