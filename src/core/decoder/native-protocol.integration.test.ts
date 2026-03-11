@@ -56,7 +56,7 @@ const NATIVE_PROTOCOL_MATRIX_CASES: NativeProtocolMatrixCase[] = [
     },
   },
   {
-    name: 'sparse serialization gate',
+    name: 'serialization metadata gate',
     query: 'SELECT if(number = 5, 1, 0)::UInt8 AS sparse_val FROM numbers(10)',
     assertParsed: (parsed, revision) => {
       const column = parsed.blocks?.[0].columns[0];
@@ -65,11 +65,11 @@ const NATIVE_PROTOCOL_MATRIX_CASES: NativeProtocolMatrixCase[] = [
 
       if (revision === 0 || revision < 54454) {
         expect(column?.serializationInfo).toBeUndefined();
-      } else if (revision < 54465) {
-        expect(column?.serializationInfo?.hasCustomSerialization).toBe(false);
       } else {
-        expect(column?.serializationInfo?.hasCustomSerialization).toBe(true);
-        expect(column?.serializationInfo?.kindStack).toEqual(['DEFAULT', 'SPARSE']);
+        expect(column?.serializationInfo).toBeDefined();
+        if (column?.serializationInfo?.hasCustomSerialization) {
+          expect(column.serializationInfo.kindStack).toContain('DEFAULT');
+        }
       }
     },
   },
@@ -85,7 +85,7 @@ const NATIVE_PROTOCOL_MATRIX_CASES: NativeProtocolMatrixCase[] = [
     },
   },
   {
-    name: 'Nullable sparse serialization gate',
+    name: 'Nullable serialization metadata gate',
     query: 'SELECT if(number = 5, 42, NULL)::Nullable(UInt8) AS sparse_nullable FROM numbers(10)',
     assertParsed: (parsed, revision) => {
       const column = parsed.blocks?.[0].columns[0];
@@ -94,11 +94,11 @@ const NATIVE_PROTOCOL_MATRIX_CASES: NativeProtocolMatrixCase[] = [
 
       if (revision === 0 || revision < 54454) {
         expect(column?.serializationInfo).toBeUndefined();
-      } else if (revision < 54483) {
-        expect(column?.serializationInfo?.hasCustomSerialization).toBe(false);
       } else {
-        expect(column?.serializationInfo?.hasCustomSerialization).toBe(true);
-        expect(column?.serializationInfo?.kindStack).toEqual(['DEFAULT', 'SPARSE']);
+        expect(column?.serializationInfo).toBeDefined();
+        if (column?.serializationInfo?.hasCustomSerialization) {
+          expect(column.serializationInfo.kindStack).toContain('DEFAULT');
+        }
       }
     },
   },

@@ -2771,9 +2771,11 @@ export class NativeDecoder extends FormatDecoder {
    * Used by decodeJSONColumnV1 and via readColumnPrefix for nested JSON in Arrays/Variants.
    */
   private readJSONColumnStructure(typedSubColumns?: Map<string, ClickHouseType>): {
+    serializationVersion: number;
     structureChildren: AstNode[];
     dynamicPathNames: string[];
     dynamicStructures: Array<{
+      serializationVersion: number;
       typeNames: string[];
       variants: ClickHouseType[];
       numTypes: number;
@@ -2788,19 +2790,28 @@ export class NativeDecoder extends FormatDecoder {
     const versionNode = this.decodeUInt64();
     versionNode.label = 'version';
     structureChildren.push(versionNode);
+    const objectSerializationVersion = Number(versionNode.value);
 
-    // 2. Read max_dynamic_paths (VarUInt)
-    const maxDynPathsStart = this.reader.offset;
-    const { value: maxDynamicPaths } = decodeLEB128(this.reader);
-    const maxDynPathsNode: AstNode = {
-      id: this.generateId(),
-      type: 'VarUInt',
-      byteRange: { start: maxDynPathsStart, end: this.reader.offset },
-      value: maxDynamicPaths,
-      displayValue: String(maxDynamicPaths),
-      label: 'max_dynamic_paths',
-    };
-    structureChildren.push(maxDynPathsNode);
+    if (objectSerializationVersion !== 0 && objectSerializationVersion !== 2) {
+      throw new Error(
+        `Unsupported JSON object serialization version ${objectSerializationVersion} in Native decoder`,
+      );
+    }
+
+    // 2. Read max_dynamic_paths (V1 only)
+    if (objectSerializationVersion === 0) {
+      const maxDynPathsStart = this.reader.offset;
+      const { value: maxDynamicPaths } = decodeLEB128(this.reader);
+      const maxDynPathsNode: AstNode = {
+        id: this.generateId(),
+        type: 'VarUInt',
+        byteRange: { start: maxDynPathsStart, end: this.reader.offset },
+        value: maxDynamicPaths,
+        displayValue: String(maxDynamicPaths),
+        label: 'max_dynamic_paths',
+      };
+      structureChildren.push(maxDynPathsNode);
+    }
 
     // 3. Read num_dynamic_paths (VarUInt)
     const numDynPathsStart = this.reader.offset;
@@ -2826,6 +2837,7 @@ export class NativeDecoder extends FormatDecoder {
 
     // 5. Read ALL Dynamic structures (one per dynamic path)
     const dynamicStructures: Array<{
+      serializationVersion: number;
       typeNames: string[];
       variants: ClickHouseType[];
       numTypes: number;
@@ -2841,19 +2853,28 @@ export class NativeDecoder extends FormatDecoder {
       const dynVersionNode = this.decodeUInt64();
       dynVersionNode.label = 'dynamic_version';
       dynamicStructureChildren.push(dynVersionNode);
+      const dynamicSerializationVersion = Number(dynVersionNode.value);
 
-      // Read max_dynamic_types
-      const maxTypesStart = this.reader.offset;
-      const { value: maxTypes } = decodeLEB128(this.reader);
-      const maxTypesNode: AstNode = {
-        id: this.generateId(),
-        type: 'VarUInt',
-        byteRange: { start: maxTypesStart, end: this.reader.offset },
-        value: maxTypes,
-        displayValue: String(maxTypes),
-        label: 'max_dynamic_types',
-      };
-      dynamicStructureChildren.push(maxTypesNode);
+      if (dynamicSerializationVersion !== 1 && dynamicSerializationVersion !== 2) {
+        throw new Error(
+          `Unsupported Dynamic serialization version ${dynamicSerializationVersion} in JSON Native decoder`,
+        );
+      }
+
+      // Read max_dynamic_types (V1 only)
+      if (dynamicSerializationVersion === 1) {
+        const maxTypesStart = this.reader.offset;
+        const { value: maxTypes } = decodeLEB128(this.reader);
+        const maxTypesNode: AstNode = {
+          id: this.generateId(),
+          type: 'VarUInt',
+          byteRange: { start: maxTypesStart, end: this.reader.offset },
+          value: maxTypes,
+          displayValue: String(maxTypes),
+          label: 'max_dynamic_types',
+        };
+        dynamicStructureChildren.push(maxTypesNode);
+      }
 
       // Read num_dynamic_types
       const numTypesStart = this.reader.offset;
@@ -2925,10 +2946,23 @@ export class NativeDecoder extends FormatDecoder {
       };
       structureChildren.push(dynamicStructureNode);
 
-      dynamicStructures.push({ typeNames, variants, numTypes, discToTypeIndex, variantPrefixes });
+      dynamicStructures.push({
+        serializationVersion: dynamicSerializationVersion,
+        typeNames,
+        variants,
+        numTypes,
+        discToTypeIndex,
+        variantPrefixes,
+      });
     }
 
-    return { structureChildren, dynamicPathNames, dynamicStructures, typedSubColumns };
+    return {
+      serializationVersion: objectSerializationVersion,
+      structureChildren,
+      dynamicPathNames,
+      dynamicStructures,
+      typedSubColumns,
+    };
   }
 
   /**

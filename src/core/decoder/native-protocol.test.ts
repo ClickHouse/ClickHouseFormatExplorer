@@ -22,6 +22,16 @@ function encodeString(value: string): number[] {
   return [...encodeLeb128(bytes.length), ...bytes];
 }
 
+function encodeUInt64LE(value: number | bigint): number[] {
+  const bytes: number[] = [];
+  let current = BigInt(value);
+  for (let i = 0; i < 8; i++) {
+    bytes.push(Number(current & 0xffn));
+    current >>= 8n;
+  }
+  return bytes;
+}
+
 function encodeSparseOffsets(nonDefaultRows: number[], rowCount: number): number[] {
   const END_OF_GRANULE_FLAG = 1n << 62n;
   const bytes: number[] = [];
@@ -37,6 +47,19 @@ function encodeSparseOffsets(nonDefaultRows: number[], rowCount: number): number
   bytes.push(...encodeLeb128(BigInt(trailingDefaults) | END_OF_GRANULE_FLAG));
 
   return bytes;
+}
+
+function collectNodes(node: unknown): Array<{ type?: string; label?: string; value?: unknown; children?: unknown[] }> {
+  if (!node || typeof node !== 'object') {
+    return [];
+  }
+
+  const typedNode = node as { children?: unknown[] };
+  const nodes = [typedNode as { type?: string; label?: string; value?: unknown; children?: unknown[] }];
+  for (const child of typedNode.children ?? []) {
+    nodes.push(...collectNodes(child));
+  }
+  return nodes;
 }
 
 describe('NativeDecoder protocol-aware parsing', () => {
@@ -165,5 +188,44 @@ describe('NativeDecoder protocol-aware parsing', () => {
     expect(parsed.blocks?.[0].columns[0].values.map((node) => node.value)).toEqual([null, 7, null]);
     expect(parsed.blocks?.[0].columns[0].values[0].metadata?.isNull).toBe(true);
     expect(parsed.blocks?.[0].columns[0].values[1].metadata?.isNull).toBe(false);
+  });
+
+  it('parses JSON object v2 with Dynamic v2 prefixes', () => {
+    const bytes = new Uint8Array([
+      0x00,
+      0x01,
+      0x01,
+      ...encodeString('j'),
+      ...encodeString('JSON(a UInt8)'),
+      0x00,
+      ...encodeUInt64LE(2),
+      0x01,
+      ...encodeString('b'),
+      ...encodeUInt64LE(2),
+      0x01,
+      ...encodeString('String'),
+      ...encodeUInt64LE(0),
+      0x2a,
+      0x01,
+      ...encodeString('hi'),
+      ...encodeUInt64LE(0),
+    ]);
+
+    const parsed = new NativeDecoder(bytes, 54473).decode();
+    const value = parsed.blocks?.[0].columns[0].values[0];
+
+    expect(value?.type).toBe('JSON');
+    expect(value?.value).toEqual({ a: 42, b: 'hi' });
+
+    const nodes = collectNodes(value);
+    const objectVersion = nodes.find((node) => node.label === 'version');
+    const dynamicVersion = nodes.find(
+      (node) => node.type === 'UInt64' && node.label === 'dynamic_version',
+    );
+
+    expect(objectVersion?.value).toBe(2n);
+    expect(dynamicVersion?.value).toBe(2n);
+    expect(nodes.some((node) => node.label === 'max_dynamic_paths')).toBe(false);
+    expect(nodes.some((node) => node.label === 'max_dynamic_types')).toBe(false);
   });
 });
