@@ -64,11 +64,16 @@ function collectAllNodeIds(parsedData: ParsedData): string[] {
   // Block-based formats (Native)
   parsedData.blocks?.forEach((block, i) => {
     ids.push(`block-${i}`);
+    visitNode(block.header.astNode);
     block.columns.forEach((col, j) => {
       ids.push(`block-${i}-col-${j}`);
+      visitNode(col.metadataNode);
+      col.dataPrefixNodes.forEach(visitNode);
       col.values.forEach(visitNode);
     });
   });
+
+  parsedData.trailingNodes?.forEach(visitNode);
 
   return ids;
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { NativeDecoder } from './native-decoder';
+import { analyzeByteRange } from './test-helpers';
 
 function encodeLeb128(value: number | bigint): number[] {
   let current = BigInt(value);
@@ -31,7 +32,6 @@ function encodeUInt64LE(value: number | bigint): number[] {
   }
   return bytes;
 }
-
 function encodeSparseOffsets(nonDefaultRows: number[], rowCount: number): number[] {
   const END_OF_GRANULE_FLAG = 1n << 62n;
   const bytes: number[] = [];
@@ -61,7 +61,6 @@ function collectNodes(node: unknown): Array<{ type?: string; label?: string; val
   }
   return nodes;
 }
-
 describe('NativeDecoder protocol-aware parsing', () => {
   it('parses legacy HTTP Native blocks without protocol metadata', () => {
     const bytes = new Uint8Array([
@@ -113,6 +112,9 @@ describe('NativeDecoder protocol-aware parsing', () => {
     expect(column?.values.map((node) => node.value)).toEqual([0, 7, 0]);
     expect(column?.values[0].metadata?.isDefaultValue).toBe(true);
     expect(column?.values[1].metadata?.isDefaultValue).toBeUndefined();
+
+    const coverage = analyzeByteRange(parsed, bytes.length);
+    expect(coverage.isComplete).toBe(true);
   });
 
   it('rejects BlockInfo field 3 before protocol version 54480', () => {
@@ -162,6 +164,9 @@ describe('NativeDecoder protocol-aware parsing', () => {
     expect(parsed.blocks?.[0].columns[0].values.map((node) => node.value)).toEqual([7, 9]);
     expect(parsed.blocks?.[0].columns[0].values[0].metadata?.replicatedIndex).toBe(0);
     expect(parsed.blocks?.[0].columns[0].values[1].metadata?.replicatedIndex).toBe(1);
+
+    const coverage = analyzeByteRange(parsed, bytes.length);
+    expect(coverage.isComplete).toBe(true);
   });
 
   it('parses nullable sparse serialization', () => {
@@ -227,5 +232,25 @@ describe('NativeDecoder protocol-aware parsing', () => {
     expect(dynamicVersion?.value).toBe(2n);
     expect(nodes.some((node) => node.label === 'max_dynamic_paths')).toBe(false);
     expect(nodes.some((node) => node.label === 'max_dynamic_types')).toBe(false);
+  });
+
+  it('covers terminal empty block bytes in the AST traversal', () => {
+    const bytes = new Uint8Array([
+      0x01,
+      0x02,
+      ...encodeString('n'),
+      ...encodeString('UInt8'),
+      0x01,
+      0x02,
+      0x00,
+      0x00,
+    ]);
+
+    const parsed = new NativeDecoder(bytes, 0).decode();
+    const coverage = analyzeByteRange(parsed, bytes.length);
+
+    expect(parsed.trailingNodes).toHaveLength(1);
+    expect(parsed.trailingNodes?.[0].type).toBe('Native.EndBlock');
+    expect(coverage.isComplete).toBe(true);
   });
 });

@@ -341,12 +341,21 @@ export function analyzeByteRange(data: ParsedData, dataLength: number): ByteCove
   // From blocks (Native format)
   if (data.blocks) {
     for (const block of data.blocks) {
+      leafNodes.push(...collectLeafNodes(block.header.astNode));
       for (const col of block.columns) {
+        leafNodes.push(...collectLeafNodes(col.metadataNode));
+        for (const node of col.dataPrefixNodes) {
+          leafNodes.push(...collectLeafNodes(node));
+        }
         for (const node of col.values) {
           leafNodes.push(...collectLeafNodes(node));
         }
       }
     }
+  }
+
+  for (const node of data.trailingNodes ?? []) {
+    leafNodes.push(...collectLeafNodes(node));
   }
 
   // Sort by start position and merge overlapping ranges

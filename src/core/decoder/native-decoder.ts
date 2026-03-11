@@ -20,6 +20,11 @@ import { ClickHouseFormat } from '../types/formats';
 const SPARSE_END_OF_GRANULE_FLAG = 1n << 62n;
 const TEXT_DECODER = new TextDecoder();
 
+interface DecodedColumnData {
+  values: AstNode[];
+  prefixNodes: AstNode[];
+}
+
 /**
  * Native format decoder (column-oriented with blocks)
  *
@@ -43,19 +48,21 @@ export class NativeDecoder extends FormatDecoder {
   }
 
   decode(): ParsedData {
-    const blocks = this.decodeBlocks();
+    const { blocks, trailingNodes } = this.decodeBlocks();
     const header = this.buildHeaderFromBlocks(blocks);
 
     return {
       format: this.format,
       header,
       blocks,
+      trailingNodes,
       totalBytes: this.reader.length,
     };
   }
 
-  private decodeBlocks(): BlockNode[] {
+  private decodeBlocks(): { blocks: BlockNode[]; trailingNodes: AstNode[] } {
     const blocks: BlockNode[] = [];
+    const trailingNodes: AstNode[] = [];
     let blockIndex = 0;
 
     while (this.reader.remaining > 0) {
@@ -63,6 +70,15 @@ export class NativeDecoder extends FormatDecoder {
 
       // Empty block (0 columns or 0 rows) signals end
       if (block.columns.length === 0 || block.rowCount === 0) {
+        trailingNodes.push({
+          id: `native-terminal-block-${blockIndex}`,
+          type: 'Native.EndBlock',
+          byteRange: block.byteRange,
+          value: { numColumns: block.header.numColumns, numRows: block.header.numRows },
+          displayValue: `terminal block (${block.header.numColumns} columns, ${block.header.numRows} rows)`,
+          label: 'terminal_block',
+          children: [block.header.astNode],
+        });
         break;
       }
 
@@ -70,22 +86,45 @@ export class NativeDecoder extends FormatDecoder {
       blockIndex++;
     }
 
-    return blocks;
+    return { blocks, trailingNodes };
   }
 
   private decodeBlock(index: number): BlockNode {
     const startOffset = this.reader.offset;
-    const blockInfo = this.protocolVersion > 0 ? this.decodeBlockInfo() : undefined;
+    const blockInfoResult = this.protocolVersion > 0 ? this.decodeBlockInfo(index) : undefined;
+    const blockInfo = blockInfoResult?.blockInfo;
 
     // Read numColumns with byte range tracking
     const numColumnsStart = this.reader.offset;
     const { value: numColumns } = decodeLEB128(this.reader);
     const numColumnsRange: ByteRange = { start: numColumnsStart, end: this.reader.offset };
+    const numColumnsNode: AstNode = {
+      id: `block-${index}-numcols`,
+      type: 'VarUInt',
+      byteRange: numColumnsRange,
+      value: numColumns,
+      displayValue: String(numColumns),
+      label: 'numColumns',
+    };
 
     // Read numRows with byte range tracking
     const numRowsStart = this.reader.offset;
     const { value: numRows } = decodeLEB128(this.reader);
     const numRowsRange: ByteRange = { start: numRowsStart, end: this.reader.offset };
+    const numRowsNode: AstNode = {
+      id: `block-${index}-numrows`,
+      type: 'VarUInt',
+      byteRange: numRowsRange,
+      value: numRows,
+      displayValue: String(numRows),
+      label: 'numRows',
+    };
+
+    const headerChildren: AstNode[] = [];
+    if (blockInfoResult?.astNode) {
+      headerChildren.push(blockInfoResult.astNode);
+    }
+    headerChildren.push(numColumnsNode, numRowsNode);
 
     const header: BlockHeaderNode = {
       byteRange: {
@@ -94,9 +133,24 @@ export class NativeDecoder extends FormatDecoder {
       },
       numColumns,
       numColumnsRange,
+      numColumnsNode,
       numRows,
       numRowsRange,
+      numRowsNode,
       blockInfo,
+      blockInfoNode: blockInfoResult?.astNode,
+      astNode: {
+        id: `block-${index}-header`,
+        type: 'Native.BlockHeader',
+        byteRange: {
+          start: blockInfo?.byteRange.start ?? numColumnsRange.start,
+          end: numRowsRange.end,
+        },
+        value: { numColumns, numRows },
+        displayValue: `${numColumns} columns, ${numRows} rows`,
+        label: 'header',
+        children: headerChildren,
+      },
     };
 
     // Empty block check
@@ -127,12 +181,21 @@ export class NativeDecoder extends FormatDecoder {
   }
 
   private decodeBlockColumn(blockIndex: number, columnIndex: number, rowCount: number): BlockColumnNode {
+    const columnId = `block-${blockIndex}-col-${columnIndex}`;
     // Read column name
     const nameStart = this.reader.offset;
     const { value: nameLen } = decodeLEB128(this.reader);
     const { value: nameBytes } = this.reader.readBytes(nameLen);
     const name = TEXT_DECODER.decode(nameBytes);
     const nameByteRange: ByteRange = { start: nameStart, end: this.reader.offset };
+    const nameNode: AstNode = {
+      id: `${columnId}-name`,
+      type: 'String',
+      byteRange: nameByteRange,
+      value: name,
+      displayValue: `"${name}"`,
+      label: 'name',
+    };
 
     // Read column type
     const typeStart = this.reader.offset;
@@ -141,28 +204,55 @@ export class NativeDecoder extends FormatDecoder {
     const typeString = TEXT_DECODER.decode(typeBytes);
     const type = parseType(typeString);
     const typeByteRange: ByteRange = { start: typeStart, end: this.reader.offset };
+    const typeNode: AstNode = {
+      id: `${columnId}-type`,
+      type: 'String',
+      byteRange: typeByteRange,
+      value: typeString,
+      displayValue: `"${typeString}"`,
+      label: 'type',
+    };
 
-    const serializationInfo = this.decodeSerializationInfo(type);
+    const serializationResult = this.decodeSerializationInfo(type, columnId);
+    const serializationInfo = serializationResult?.info;
     const metadataByteRange: ByteRange = {
       start: nameByteRange.start,
       end: serializationInfo?.byteRange.end ?? typeByteRange.end,
     };
+    const metadataChildren = [nameNode, typeNode];
+    if (serializationResult?.astNode) {
+      metadataChildren.push(serializationResult.astNode);
+    }
+    const metadataNode: AstNode = {
+      id: `${columnId}-meta`,
+      type: 'Native.ColumnMeta',
+      byteRange: metadataByteRange,
+      value: { name, type: typeString },
+      displayValue: `${name}: ${typeString}`,
+      label: 'meta',
+      children: metadataChildren,
+    };
 
     // Read column data
     const dataStart = this.reader.offset;
-    const values = this.decodeColumnData(type, rowCount, serializationInfo);
+    const { values, prefixNodes } = this.decodeColumnData(type, rowCount, serializationInfo);
     const dataByteRange: ByteRange = { start: dataStart, end: this.reader.offset };
 
     return {
-      id: `block-${blockIndex}-col-${columnIndex}`,
+      id: columnId,
       name,
       nameByteRange,
+      nameNode,
       type,
       typeString,
       typeByteRange,
+      typeNode,
       metadataByteRange,
+      metadataNode,
       dataByteRange,
+      dataPrefixNodes: prefixNodes,
       serializationInfo,
+      serializationNode: serializationResult?.astNode,
       values,
     };
   }
@@ -171,50 +261,50 @@ export class NativeDecoder extends FormatDecoder {
     type: ClickHouseType,
     rowCount: number,
     serializationInfo?: NativeSerializationInfo,
-  ): AstNode[] {
+  ): DecodedColumnData {
     const kindStack = serializationInfo?.kindStack ?? ['DEFAULT'];
     return this.decodeColumnDataWithKinds(type, rowCount, kindStack.slice(1));
   }
 
-  private decodeColumnDataDefault(type: ClickHouseType, rowCount: number): AstNode[] {
+  private decodeColumnDataDefault(type: ClickHouseType, rowCount: number): DecodedColumnData {
     // Handle complex types that have different columnar encoding
     switch (type.kind) {
       case 'Nullable':
-        return this.decodeNullableColumn(type.inner, rowCount);
+        return { values: this.decodeNullableColumn(type.inner, rowCount), prefixNodes: [] };
       case 'Array':
-        return this.decodeArrayColumn(type.element, rowCount);
+        return { values: this.decodeArrayColumn(type.element, rowCount), prefixNodes: [] };
       case 'Map':
-        return this.decodeMapColumn(type.key, type.value, rowCount);
+        return { values: this.decodeMapColumn(type.key, type.value, rowCount), prefixNodes: [] };
       case 'LowCardinality':
-        return this.decodeLowCardinalityColumn(type.inner, rowCount);
+        return { values: this.decodeLowCardinalityColumn(type.inner, rowCount), prefixNodes: [] };
       case 'Variant':
-        return this.decodeVariantColumn(type.variants, rowCount);
+        return { values: this.decodeVariantColumn(type.variants, rowCount), prefixNodes: [] };
       case 'Dynamic':
-        return this.decodeDynamicColumn(rowCount);
+        return { values: this.decodeDynamicColumn(rowCount), prefixNodes: [] };
       case 'JSON':
-        return this.decodeJSONColumn(type, rowCount);
+        return { values: this.decodeJSONColumn(type, rowCount), prefixNodes: [] };
       case 'Tuple':
-        return this.decodeTupleColumn(type.elements, type.names, rowCount);
+        return { values: this.decodeTupleColumn(type.elements, type.names, rowCount), prefixNodes: [] };
       case 'Nested':
         throw new Error(`Native format: ${typeToString(type)} not yet implemented`);
       // Geometry - Variant of geo types
       case 'Geometry':
-        return this.decodeGeometryColumn(rowCount);
+        return { values: this.decodeGeometryColumn(rowCount), prefixNodes: [] };
       // Geo types - Array-based
       case 'Ring':
-        return this.decodeRingColumn(rowCount);
+        return { values: this.decodeRingColumn(rowCount), prefixNodes: [] };
       case 'Polygon':
-        return this.decodePolygonColumn(rowCount);
+        return { values: this.decodePolygonColumn(rowCount), prefixNodes: [] };
       case 'MultiPolygon':
-        return this.decodeMultiPolygonColumn(rowCount);
+        return { values: this.decodeMultiPolygonColumn(rowCount), prefixNodes: [] };
       case 'LineString':
-        return this.decodeLineStringColumn(rowCount);
+        return { values: this.decodeLineStringColumn(rowCount), prefixNodes: [] };
       case 'MultiLineString':
-        return this.decodeMultiLineStringColumn(rowCount);
+        return { values: this.decodeMultiLineStringColumn(rowCount), prefixNodes: [] };
       case 'QBit':
-        return this.decodeQBitColumn(type.element, type.dimension, rowCount);
+        return { values: this.decodeQBitColumn(type.element, type.dimension, rowCount), prefixNodes: [] };
       case 'AggregateFunction':
-        return this.decodeAggregateFunctionColumn(type.functionName, type.argTypes, rowCount);
+        return { values: this.decodeAggregateFunctionColumn(type.functionName, type.argTypes, rowCount), prefixNodes: [] };
     }
 
     // Simple types: decode rowCount values sequentially
@@ -224,10 +314,10 @@ export class NativeDecoder extends FormatDecoder {
       node.label = `[${i}]`;
       values.push(node);
     }
-    return values;
+    return { values, prefixNodes: [] };
   }
 
-  private decodeColumnDataWithKinds(type: ClickHouseType, rowCount: number, kinds: string[]): AstNode[] {
+  private decodeColumnDataWithKinds(type: ClickHouseType, rowCount: number, kinds: string[]): DecodedColumnData {
     if (kinds.length === 0) {
       return this.decodeColumnDataDefault(type, rowCount);
     }
@@ -248,9 +338,10 @@ export class NativeDecoder extends FormatDecoder {
     }
   }
 
-  private decodeBlockInfo(): NativeBlockInfo {
+  private decodeBlockInfo(index: number): { blockInfo: NativeBlockInfo; astNode: AstNode } {
     const start = this.reader.offset;
     const fields: NativeBlockInfoField[] = [];
+    const children: AstNode[] = [];
 
     while (true) {
       const fieldNumberStart = this.reader.offset;
@@ -258,17 +349,40 @@ export class NativeDecoder extends FormatDecoder {
       const fieldNumberRange: ByteRange = { start: fieldNumberStart, end: this.reader.offset };
 
       if (fieldNumber === 0) {
-        return {
+        const blockInfo: NativeBlockInfo = {
           byteRange: { start, end: this.reader.offset },
           terminatorRange: fieldNumberRange,
           fields,
+        };
+        children.push({
+          id: `block-${index}-blockinfo-terminator`,
+          type: 'VarUInt',
+          byteRange: fieldNumberRange,
+          value: 0,
+          displayValue: '0',
+          label: 'terminator',
+        });
+        return {
+          blockInfo,
+          astNode: {
+            id: `block-${index}-blockinfo`,
+            type: 'Native.BlockInfo',
+            byteRange: blockInfo.byteRange,
+            value: fields.reduce<Record<string, boolean | number | number[]>>((acc, field) => {
+              acc[field.fieldName] = field.value;
+              return acc;
+            }, {}),
+            displayValue: `${fields.length} fields`,
+            label: 'blockInfo',
+            children,
+          },
         };
       }
 
       switch (fieldNumber) {
         case 1: {
           const { value, range } = this.reader.readUInt8();
-          fields.push({
+          const field = {
             fieldNumber,
             fieldName: 'is_overflows',
             value: value !== 0,
@@ -276,12 +390,39 @@ export class NativeDecoder extends FormatDecoder {
             fieldNumberRange,
             valueRange: range,
             byteRange: { start: fieldNumberRange.start, end: range.end },
-          });
+          };
+          fields.push(field);
+          children.push(this.createNativeMetadataNode(
+            `block-${index}-blockinfo-field-${fieldNumber}`,
+            `Native.BlockInfo.Field.${field.fieldName}`,
+            field.byteRange,
+            field.value,
+            field.displayValue,
+            field.fieldName,
+            [
+              this.createNativeMetadataNode(
+                `block-${index}-blockinfo-field-${fieldNumber}-number`,
+                'VarUInt',
+                fieldNumberRange,
+                fieldNumber,
+                String(fieldNumber),
+                'field_number',
+              ),
+              this.createNativeMetadataNode(
+                `block-${index}-blockinfo-field-${fieldNumber}-value`,
+                'UInt8',
+                range,
+                value,
+                String(value),
+                'value',
+              ),
+            ],
+          ));
           break;
         }
         case 2: {
           const { value, range } = this.reader.readInt32LE();
-          fields.push({
+          const field = {
             fieldNumber,
             fieldName: 'bucket_num',
             value,
@@ -289,7 +430,34 @@ export class NativeDecoder extends FormatDecoder {
             fieldNumberRange,
             valueRange: range,
             byteRange: { start: fieldNumberRange.start, end: range.end },
-          });
+          };
+          fields.push(field);
+          children.push(this.createNativeMetadataNode(
+            `block-${index}-blockinfo-field-${fieldNumber}`,
+            `Native.BlockInfo.Field.${field.fieldName}`,
+            field.byteRange,
+            field.value,
+            field.displayValue,
+            field.fieldName,
+            [
+              this.createNativeMetadataNode(
+                `block-${index}-blockinfo-field-${fieldNumber}-number`,
+                'VarUInt',
+                fieldNumberRange,
+                fieldNumber,
+                String(fieldNumber),
+                'field_number',
+              ),
+              this.createNativeMetadataNode(
+                `block-${index}-blockinfo-field-${fieldNumber}-value`,
+                'Int32',
+                range,
+                value,
+                String(value),
+                'value',
+              ),
+            ],
+          ));
           break;
         }
         case 3: {
@@ -306,7 +474,7 @@ export class NativeDecoder extends FormatDecoder {
             values.push(value);
           }
           const valueRange: ByteRange = { start: valueStart, end: this.reader.offset };
-          fields.push({
+          const field = {
             fieldNumber,
             fieldName: 'out_of_order_buckets',
             value: values,
@@ -314,7 +482,34 @@ export class NativeDecoder extends FormatDecoder {
             fieldNumberRange,
             valueRange,
             byteRange: { start: fieldNumberRange.start, end: valueRange.end },
-          });
+          };
+          fields.push(field);
+          children.push(this.createNativeMetadataNode(
+            `block-${index}-blockinfo-field-${fieldNumber}`,
+            `Native.BlockInfo.Field.${field.fieldName}`,
+            field.byteRange,
+            values,
+            field.displayValue,
+            field.fieldName,
+            [
+              this.createNativeMetadataNode(
+                `block-${index}-blockinfo-field-${fieldNumber}-number`,
+                'VarUInt',
+                fieldNumberRange,
+                fieldNumber,
+                String(fieldNumber),
+                'field_number',
+              ),
+              this.createNativeMetadataNode(
+                `block-${index}-blockinfo-field-${fieldNumber}-value`,
+                'Array(Int32)',
+                valueRange,
+                values,
+                field.displayValue,
+                'value',
+              ),
+            ],
+          ));
           break;
         }
         default:
@@ -323,7 +518,10 @@ export class NativeDecoder extends FormatDecoder {
     }
   }
 
-  private decodeSerializationInfo(type: ClickHouseType): NativeSerializationInfo | undefined {
+  private decodeSerializationInfo(
+    type: ClickHouseType,
+    columnId: string,
+  ): { info: NativeSerializationInfo; astNode: AstNode } | undefined {
     if (this.protocolVersion < 54454) {
       return undefined;
     }
@@ -340,12 +538,51 @@ export class NativeDecoder extends FormatDecoder {
       kindStackRange = { start: kindStackStart, end: this.reader.offset };
     }
 
-    return {
+    const info: NativeSerializationInfo = {
       byteRange: { start, end: this.reader.offset },
       hasCustomSerialization,
       hasCustomRange,
       kindStack,
       kindStackRange,
+    };
+
+    const children = [
+      this.createNativeMetadataNode(
+        `${columnId}-serialization-has-custom`,
+        'UInt8',
+        hasCustomRange,
+        hasCustomValue,
+        String(hasCustomValue),
+        'has_custom',
+      ),
+    ];
+    if (kindStackRange) {
+      children.push(
+        this.createNativeMetadataNode(
+          `${columnId}-serialization-kinds`,
+          'Native.SerializationKinds',
+          kindStackRange,
+          kindStack,
+          kindStack.join(' -> '),
+          'kindStack',
+        ),
+      );
+    }
+
+    return {
+      info,
+      astNode: {
+        id: `${columnId}-serialization`,
+        type: 'Native.Serialization',
+        byteRange: info.byteRange,
+        value: {
+          hasCustomSerialization,
+          kindStack,
+        },
+        displayValue: hasCustomSerialization ? 'custom' : 'default',
+        label: 'serialization',
+        children,
+      },
     };
   }
 
@@ -406,8 +643,17 @@ export class NativeDecoder extends FormatDecoder {
     }
   }
 
-  private decodeSparseColumn(type: ClickHouseType, rowCount: number, nestedKinds: string[]): AstNode[] {
+  private decodeSparseColumn(type: ClickHouseType, rowCount: number, nestedKinds: string[]): DecodedColumnData {
+    const sparseStart = this.reader.offset;
     const positions = this.decodeSparsePositions(rowCount);
+    const sparseNode = this.createNativeMetadataNode(
+      this.generateId(),
+      'Native.SparsePositions',
+      { start: sparseStart, end: this.reader.offset },
+      positions,
+      `[${positions.join(', ')}]`,
+      'sparse_positions',
+    );
 
     if (type.kind === 'Nullable') {
       if (nestedKinds.length > 0) {
@@ -417,16 +663,16 @@ export class NativeDecoder extends FormatDecoder {
         );
       }
 
-      return this.decodeSparseNullableColumn(type.inner, rowCount, positions);
+      return this.decodeSparseNullableColumn(type.inner, rowCount, positions, sparseNode);
     }
 
-    const nonDefaultValues = this.decodeColumnDataWithKinds(type, positions.length, nestedKinds);
+    const nested = this.decodeColumnDataWithKinds(type, positions.length, nestedKinds);
     const values: AstNode[] = [];
     let valueIndex = 0;
 
     for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
       if (valueIndex < positions.length && positions[valueIndex] === rowIndex) {
-        const node = this.cloneAstNode(nonDefaultValues[valueIndex], `[${rowIndex}]`);
+        const node = this.cloneAstNode(nested.values[valueIndex], `[${rowIndex}]`);
         node.label = `[${rowIndex}]`;
         values.push(node);
         valueIndex++;
@@ -436,21 +682,22 @@ export class NativeDecoder extends FormatDecoder {
       values.push(this.createDefaultNode(type, rowIndex));
     }
 
-    return values;
+    return { values, prefixNodes: [sparseNode, ...nested.prefixNodes] };
   }
 
   private decodeSparseNullableColumn(
     innerType: ClickHouseType,
     rowCount: number,
     nonNullPositions: number[],
-  ): AstNode[] {
-    const nonNullValues = this.decodeColumnDataDefault(innerType, nonNullPositions.length);
+    sparseNode: AstNode,
+  ): DecodedColumnData {
+    const nonNullData = this.decodeColumnDataDefault(innerType, nonNullPositions.length);
     const values: AstNode[] = [];
     let valueIndex = 0;
 
     for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
       if (valueIndex < nonNullPositions.length && nonNullPositions[valueIndex] === rowIndex) {
-        const innerNode = this.cloneAstNode(nonNullValues[valueIndex], 'value');
+        const innerNode = this.cloneAstNode(nonNullData.values[valueIndex], 'value');
         values.push({
           id: this.generateId(),
           type: `Nullable(${typeToString(innerType)})`,
@@ -476,30 +723,66 @@ export class NativeDecoder extends FormatDecoder {
       });
     }
 
-    return values;
+    return { values, prefixNodes: [sparseNode, ...nonNullData.prefixNodes] };
   }
 
-  private decodeReplicatedColumn(type: ClickHouseType, rowCount: number, nestedKinds: string[]): AstNode[] {
+  private decodeReplicatedColumn(type: ClickHouseType, rowCount: number, nestedKinds: string[]): DecodedColumnData {
+    const serializedRowCountStart = this.reader.offset;
     const { value: serializedRowCount } = decodeLEB128(this.reader);
+    const serializedRowCountNode = this.createNativeMetadataNode(
+      this.generateId(),
+      'VarUInt',
+      { start: serializedRowCountStart, end: this.reader.offset },
+      serializedRowCount,
+      String(serializedRowCount),
+      'serialized_row_count',
+    );
     if (serializedRowCount !== rowCount) {
       throw new Error(
         `Native format: replicated row count ${serializedRowCount} does not match block row count ${rowCount}`,
       );
     }
 
+    const indexSizeStart = this.reader.offset;
     const { value: indexSize } = this.reader.readUInt8();
+    const indexSizeNode = this.createNativeMetadataNode(
+      this.generateId(),
+      'UInt8',
+      { start: indexSizeStart, end: this.reader.offset },
+      indexSize,
+      String(indexSize),
+      'index_size',
+    );
+    const indexesStart = this.reader.offset;
     const indexes: number[] = [];
     for (let i = 0; i < rowCount; i++) {
       indexes.push(this.readReplicatedIndex(indexSize));
     }
+    const indexesNode = this.createNativeMetadataNode(
+      this.generateId(),
+      `Array(UInt${indexSize * 8})`,
+      { start: indexesStart, end: this.reader.offset },
+      indexes,
+      `[${indexes.join(', ')}]`,
+      'indexes',
+    );
 
+    const nestedRowCountStart = this.reader.offset;
     const { value: nestedRowCount } = decodeLEB128(this.reader);
-    const nestedValues = this.decodeColumnDataWithKinds(type, nestedRowCount, nestedKinds);
+    const nestedRowCountNode = this.createNativeMetadataNode(
+      this.generateId(),
+      'VarUInt',
+      { start: nestedRowCountStart, end: this.reader.offset },
+      nestedRowCount,
+      String(nestedRowCount),
+      'nested_row_count',
+    );
+    const nested = this.decodeColumnDataWithKinds(type, nestedRowCount, nestedKinds);
 
-    return indexes.map((index, rowIndex) => {
-      const sourceNode = nestedValues[index];
+    const values = indexes.map((index, rowIndex) => {
+      const sourceNode = nested.values[index];
       if (!sourceNode) {
-        throw new Error(`Native format: replicated index ${index} out of bounds for ${nestedValues.length} nested values`);
+        throw new Error(`Native format: replicated index ${index} out of bounds for ${nested.values.length} nested values`);
       }
 
       const cloned = this.cloneAstNode(sourceNode, `[${rowIndex}]`);
@@ -509,6 +792,17 @@ export class NativeDecoder extends FormatDecoder {
       };
       return cloned;
     });
+
+    return {
+      values,
+      prefixNodes: [
+        serializedRowCountNode,
+        indexSizeNode,
+        indexesNode,
+        nestedRowCountNode,
+        ...nested.prefixNodes,
+      ],
+    };
   }
 
   private readReplicatedIndex(indexSize: number): number {
@@ -900,6 +1194,26 @@ export class NativeDecoder extends FormatDecoder {
       displayValue,
       label: `[${rowIndex}]`,
       metadata: { isDefaultValue: true },
+    };
+  }
+
+  private createNativeMetadataNode(
+    id: string,
+    type: string,
+    byteRange: ByteRange,
+    value: unknown,
+    displayValue: string,
+    label?: string,
+    children?: AstNode[],
+  ): AstNode {
+    return {
+      id,
+      type,
+      byteRange,
+      value,
+      displayValue,
+      label,
+      children,
     };
   }
 
@@ -1427,7 +1741,7 @@ export class NativeDecoder extends FormatDecoder {
     // Read all values for each element type
     const elementColumns: AstNode[][] = [];
     for (let i = 0; i < elements.length; i++) {
-      elementColumns.push(this.decodeColumnData(elements[i], rowCount));
+      elementColumns.push(this.decodeColumnData(elements[i], rowCount).values);
     }
 
     // Assemble tuples
@@ -1480,7 +1794,7 @@ export class NativeDecoder extends FormatDecoder {
     }
 
     // Read all values (even for NULLs)
-    const innerValues = this.decodeColumnData(innerType, rowCount);
+    const innerValues = this.decodeColumnData(innerType, rowCount).values;
 
     // Combine null map with values
     const values: AstNode[] = [];
@@ -1559,7 +1873,7 @@ export class NativeDecoder extends FormatDecoder {
     }
 
     // Read all elements
-    const allElements = this.decodeColumnData(elementType, totalElements);
+    const allElements = this.decodeColumnData(elementType, totalElements).values;
     const elementsEnd = this.reader.offset;
 
     // Distribute elements to arrays
@@ -1611,9 +1925,18 @@ export class NativeDecoder extends FormatDecoder {
 
     // Read cumulative offsets
     const offsets: bigint[] = [];
+    const offsetNodes: AstNode[] = [];
     for (let i = 0; i < rowCount; i++) {
-      const { value } = this.reader.readUInt64LE();
+      const { value, range } = this.reader.readUInt64LE();
       offsets.push(value);
+      offsetNodes.push({
+        id: this.generateId(),
+        type: 'ArraySizes',
+        byteRange: range,
+        value,
+        displayValue: `${value} (cumulative)`,
+        label: `[${i}]`,
+      });
     }
 
     // Calculate sizes
@@ -1626,10 +1949,10 @@ export class NativeDecoder extends FormatDecoder {
     }
 
     // Read all keys
-    const allKeys = this.decodeColumnData(keyType, totalEntries);
+    const allKeys = this.decodeColumnData(keyType, totalEntries).values;
 
     // Read all values
-    const allValues = this.decodeColumnData(valueType, totalEntries);
+    const allValues = this.decodeColumnData(valueType, totalEntries).values;
 
     // Distribute to maps
     const values: AstNode[] = [];
@@ -1657,15 +1980,24 @@ export class NativeDecoder extends FormatDecoder {
       }
 
       entryIndex += size;
+      const entriesEnd = entries[entries.length - 1]?.byteRange.end ?? offsetNodes[i].byteRange.end;
+      const lengthNode: AstNode = {
+        id: this.generateId(),
+        type: 'UInt64',
+        byteRange: offsetNodes[i].byteRange,
+        value: BigInt(size),
+        displayValue: `${size} (cumulative: ${offsets[i]})`,
+        label: 'length',
+      };
 
       values.push({
         id: this.generateId(),
         type: typeStr,
-        byteRange: { start: entries[0]?.byteRange.start ?? this.reader.offset, end: this.reader.offset },
+        byteRange: { start: offsetNodes[i].byteRange.start, end: entriesEnd },
         value: Object.fromEntries(entries.map(e => [e.children![0].value, e.children![1].value])),
         displayValue: `{${entries.map(e => e.displayValue).join(', ')}}`,
         label: `[${i}]`,
-        children: entries,
+        children: [lengthNode, ...entries],
         metadata: { size },
       });
     }
@@ -1701,7 +2033,7 @@ export class NativeDecoder extends FormatDecoder {
 
       // Determine the actual inner type for decoding (unwrap Nullable if present)
       const dictType = innerType.kind === 'Nullable' ? innerType.inner : innerType;
-      dictionary = this.decodeColumnData(dictType, Number(numKeys));
+      dictionary = this.decodeColumnData(dictType, Number(numKeys)).values;
     }
 
     // Read row count
@@ -1813,7 +2145,7 @@ export class NativeDecoder extends FormatDecoder {
     for (let v = 0; v < variants.length; v++) {
       const count = countPerVariant[v];
       if (count > 0) {
-        variantData[v] = this.decodeColumnData(variants[v], count);
+        variantData[v] = this.decodeColumnData(variants[v], count).values;
       } else {
         variantData[v] = [];
       }
@@ -2104,7 +2436,7 @@ export class NativeDecoder extends FormatDecoder {
         variantDataByDisc[disc] = sharedVariantData;
       } else if (typeIdx !== undefined) {
         // Declared type
-        variantDataByDisc[disc] = this.decodeColumnData(variants[typeIdx], count);
+        variantDataByDisc[disc] = this.decodeColumnData(variants[typeIdx], count).values;
       }
     }
 
@@ -2691,7 +3023,7 @@ export class NativeDecoder extends FormatDecoder {
       return this.decodeArrayColumnWithPrefix(type.element, rowCount, prefix);
     }
     // No prefix - use normal decoding
-    return this.decodeColumnData(type, rowCount);
+    return this.decodeColumnData(type, rowCount).values;
   }
 
   /**
@@ -2985,7 +3317,7 @@ export class NativeDecoder extends FormatDecoder {
         a[0].localeCompare(b[0])
       );
       for (const [pathName, pathType] of sortedTypedPaths) {
-        const nodes = this.decodeColumnData(pathType, rowCount);
+        const nodes = this.decodeColumnData(pathType, rowCount).values;
         typedPathData.set(pathName, nodes);
       }
     }
@@ -3124,7 +3456,7 @@ export class NativeDecoder extends FormatDecoder {
 
       let value: unknown = null;
       if (entryType) {
-        const valueNodes = this.decodeColumnData(entryType, 1);
+        const valueNodes = this.decodeColumnData(entryType, 1).values;
         value = valueNodes[0]?.value;
       }
 

@@ -57,9 +57,13 @@ export interface BlockHeaderNode {
   byteRange: ByteRange;
   numColumns: number;
   numColumnsRange: ByteRange;
+  numColumnsNode: AstNode;
   numRows: number;
   numRowsRange: ByteRange;
+  numRowsNode: AstNode;
   blockInfo?: NativeBlockInfo;
+  blockInfoNode?: AstNode;
+  astNode: AstNode;
 }
 
 /**
@@ -80,12 +84,17 @@ export interface BlockColumnNode {
   id: string;
   name: string;
   nameByteRange: ByteRange;
+  nameNode: AstNode;
   type: import('./clickhouse-types').ClickHouseType;
   typeString: string;
   typeByteRange: ByteRange;
+  typeNode: AstNode;
   metadataByteRange: ByteRange;
+  metadataNode: AstNode;
   dataByteRange: ByteRange;
+  dataPrefixNodes: AstNode[];
   serializationInfo?: NativeSerializationInfo;
+  serializationNode?: AstNode;
   values: AstNode[];
 }
 
@@ -124,4 +133,6 @@ export interface ParsedData {
   rows?: RowNode[];
   /** Block-based formats (Native) */
   blocks?: BlockNode[];
+  /** Trailing protocol nodes not attached to data rows/blocks (for example terminal Native blocks) */
+  trailingNodes?: AstNode[];
 }
