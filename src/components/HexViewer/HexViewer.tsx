@@ -125,8 +125,7 @@ function buildHighlightMap(
     const blockHeaderId = `block-${blockIndex}-header`;
     if (activeNodeId === blockHeaderId || hoveredNodeId === blockHeaderId) {
       const isActive = activeNodeId === blockHeaderId;
-      // Highlight entire header range (numColumns + numRows)
-      for (let i = block.header.numColumnsRange.start; i < block.header.numRowsRange.end; i++) {
+      for (let i = block.header.byteRange.start; i < block.header.byteRange.end; i++) {
         const existing = map.get(i);
         if (!existing || isActive || !existing.isActive) {
           map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
@@ -158,6 +157,30 @@ function buildHighlightMap(
       }
     }
 
+    const blockInfoId = `block-${blockIndex}-blockinfo`;
+    if (block.header.blockInfo && (activeNodeId === blockInfoId || hoveredNodeId === blockInfoId)) {
+      const isActive = activeNodeId === blockInfoId;
+      for (let i = block.header.blockInfo.byteRange.start; i < block.header.blockInfo.byteRange.end; i++) {
+        const existing = map.get(i);
+        if (!existing || isActive || !existing.isActive) {
+          map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+        }
+      }
+    }
+
+    block.header.blockInfo?.fields.forEach((field) => {
+      const fieldId = `block-${blockIndex}-blockinfo-field-${field.fieldNumber}`;
+      if (activeNodeId === fieldId || hoveredNodeId === fieldId) {
+        const isActive = activeNodeId === fieldId;
+        for (let i = field.byteRange.start; i < field.byteRange.end; i++) {
+          const existing = map.get(i);
+          if (!existing || isActive || !existing.isActive) {
+            map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+          }
+        }
+      }
+    });
+
     block.columns.forEach((col) => {
       // Check if the column itself is active/hovered
       const isColActive = col.id === activeNodeId;
@@ -181,8 +204,7 @@ function buildHighlightMap(
 
       if (activeNodeId === colMetaId || hoveredNodeId === colMetaId) {
         const isActive = activeNodeId === colMetaId;
-        // Highlight both name and type ranges
-        for (let i = col.nameByteRange.start; i < col.typeByteRange.end; i++) {
+        for (let i = col.metadataByteRange.start; i < col.metadataByteRange.end; i++) {
           const existing = map.get(i);
           if (!existing || isActive || !existing.isActive) {
             map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
@@ -206,6 +228,41 @@ function buildHighlightMap(
           const existing = map.get(i);
           if (!existing || isActive || !existing.isActive) {
             map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+          }
+        }
+      }
+
+      if (col.serializationInfo) {
+        const serializationId = `${col.id}-serialization`;
+        if (activeNodeId === serializationId || hoveredNodeId === serializationId) {
+          const isActive = activeNodeId === serializationId;
+          for (let i = col.serializationInfo.byteRange.start; i < col.serializationInfo.byteRange.end; i++) {
+            const existing = map.get(i);
+            if (!existing || isActive || !existing.isActive) {
+              map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+            }
+          }
+        }
+
+        const hasCustomId = `${col.id}-serialization-has-custom`;
+        if (activeNodeId === hasCustomId || hoveredNodeId === hasCustomId) {
+          const isActive = activeNodeId === hasCustomId;
+          for (let i = col.serializationInfo.hasCustomRange.start; i < col.serializationInfo.hasCustomRange.end; i++) {
+            const existing = map.get(i);
+            if (!existing || isActive || !existing.isActive) {
+              map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+            }
+          }
+        }
+
+        const kindsId = `${col.id}-serialization-kinds`;
+        if (col.serializationInfo.kindStackRange && (activeNodeId === kindsId || hoveredNodeId === kindsId)) {
+          const isActive = activeNodeId === kindsId;
+          for (let i = col.serializationInfo.kindStackRange.start; i < col.serializationInfo.kindStackRange.end; i++) {
+            const existing = map.get(i);
+            if (!existing || isActive || !existing.isActive) {
+              map.set(i, { color: metadataColor, isActive, isHovered: !isActive });
+            }
           }
         }
       }

@@ -6,17 +6,23 @@ import { QueryInput } from './QueryInput';
 import { decodeBase64Url } from '../core/base64url';
 import { useStore } from '../store/store';
 import { ClickHouseFormat } from '../core/types/formats';
+import {
+  DEFAULT_NATIVE_PROTOCOL_VERSION,
+  isNativeProtocolVersion,
+} from '../core/types/native-protocol';
 import logo from '../assets/clickhouse-yellow-badge.svg';
 import '../styles/app.css';
 
 function App() {
   const setQuery = useStore((s) => s.setQuery);
   const setFormat = useStore((s) => s.setFormat);
+  const setNativeProtocolVersion = useStore((s) => s.setNativeProtocolVersion);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const q = params.get('q');
     const f = params.get('f');
+    const pv = params.get('pv');
 
     if (q) {
       try {
@@ -28,8 +34,16 @@ function App() {
     if (f && Object.values(ClickHouseFormat).includes(f as ClickHouseFormat)) {
       setFormat(f as ClickHouseFormat);
     }
+    if (pv) {
+      const parsed = Number(pv);
+      if (Number.isInteger(parsed) && isNativeProtocolVersion(parsed)) {
+        setNativeProtocolVersion(parsed);
+      } else {
+        setNativeProtocolVersion(DEFAULT_NATIVE_PROTOCOL_VERSION);
+      }
+    }
 
-    if (q || f) {
+    if (q || f || pv) {
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps

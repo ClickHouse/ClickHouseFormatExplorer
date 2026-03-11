@@ -3,6 +3,7 @@ import { clickhouse, DEFAULT_QUERY } from '../core/clickhouse/client';
 import { createDecoder } from '../core/decoder';
 import { AstNode, ParsedData } from '../core/types/ast';
 import { ClickHouseFormat } from '../core/types/formats';
+import { DEFAULT_NATIVE_PROTOCOL_VERSION } from '../core/types/native-protocol';
 
 interface AppState {
   // Query
@@ -12,6 +13,8 @@ interface AppState {
   // Format
   format: ClickHouseFormat;
   setFormat: (format: ClickHouseFormat) => void;
+  nativeProtocolVersion: number;
+  setNativeProtocolVersion: (version: number) => void;
 
   // Data
   rawData: Uint8Array | null;
@@ -122,6 +125,7 @@ export const useStore = create<AppState>((set, get) => ({
   // Initial state
   query: DEFAULT_QUERY,
   format: ClickHouseFormat.RowBinaryWithNamesAndTypes,
+  nativeProtocolVersion: DEFAULT_NATIVE_PROTOCOL_VERSION,
   rawData: null,
   parsedData: null,
   parseError: null,
@@ -135,14 +139,15 @@ export const useStore = create<AppState>((set, get) => ({
 
   setQuery: (query) => set({ query }),
   setFormat: (format) => set({ format }),
+  setNativeProtocolVersion: (nativeProtocolVersion) => set({ nativeProtocolVersion }),
 
   executeQuery: async () => {
-    const { query, format } = get();
+    const { query, format, nativeProtocolVersion } = get();
     set(getLoadingState());
 
     try {
-      const { data, timing } = await clickhouse.query({ query, format });
-      const decoder = createDecoder(data, format);
+      const { data, timing } = await clickhouse.query({ query, format, nativeProtocolVersion });
+      const decoder = createDecoder(data, format, { nativeProtocolVersion });
       const parsed = decoder.decode();
       set(getSuccessState(data, parsed, timing));
     } catch (error) {
@@ -152,13 +157,13 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   loadFile: async (file: File) => {
-    const { format } = get();
+    const { format, nativeProtocolVersion } = get();
     set(getLoadingState());
 
     try {
       const arrayBuffer = await file.arrayBuffer();
       const data = new Uint8Array(arrayBuffer);
-      const decoder = createDecoder(data, format);
+      const decoder = createDecoder(data, format, { nativeProtocolVersion });
       const parsed = decoder.decode();
       set(getSuccessState(data, parsed, null));
     } catch (error) {

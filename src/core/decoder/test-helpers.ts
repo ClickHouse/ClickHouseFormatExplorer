@@ -116,8 +116,8 @@ export function decodeRowBinary(data: Uint8Array): ParsedData {
 /**
  * Decode Native format data
  */
-export function decodeNative(data: Uint8Array): ParsedData {
-  const decoder = new NativeDecoder(data);
+export function decodeNative(data: Uint8Array, protocolVersion = 0): ParsedData {
+  const decoder = new NativeDecoder(data, protocolVersion);
   return decoder.decode();
 }
 

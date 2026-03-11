@@ -1,10 +1,12 @@
 import { ClickHouseFormat } from '../types/formats';
+import { DEFAULT_NATIVE_PROTOCOL_VERSION } from '../types/native-protocol';
+import { appendClickHouseRequestParams } from './request-params';
 
 /**
  * Electron IPC API exposed via preload script
  */
 interface ElectronAPI {
-  executeQuery(options: { query: string; format: string }): Promise<ArrayBuffer>;
+  executeQuery(options: { query: string; format: string; nativeProtocolVersion?: number }): Promise<ArrayBuffer>;
   getConfig(): Promise<{ host: string }>;
   saveConfig(config: { host: string }): Promise<void>;
 }
@@ -22,6 +24,7 @@ declare global {
 export interface QueryOptions {
   query: string;
   format?: ClickHouseFormat;
+  nativeProtocolVersion?: number;
   timeout?: number;
 }
 
@@ -40,11 +43,16 @@ export class ClickHouseClient {
   /**
    * Execute a query and return raw binary data
    */
-  async query({ query, format = ClickHouseFormat.RowBinaryWithNamesAndTypes, timeout = 30000 }: QueryOptions): Promise<QueryResult> {
+  async query({
+    query,
+    format = ClickHouseFormat.RowBinaryWithNamesAndTypes,
+    nativeProtocolVersion = DEFAULT_NATIVE_PROTOCOL_VERSION,
+    timeout = 30000,
+  }: QueryOptions): Promise<QueryResult> {
     if (window.electronAPI) {
       const startTime = performance.now();
       const buffer = await Promise.race([
-        window.electronAPI.executeQuery({ query, format }),
+        window.electronAPI.executeQuery({ query, format, nativeProtocolVersion }),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error(`Query timeout after ${timeout}ms`)), timeout)
         ),
@@ -58,7 +66,10 @@ export class ClickHouseClient {
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
     try {
-      const response = await fetch(`${this.baseUrl}/?default_format=${format}`, {
+      const params = new URLSearchParams();
+      appendClickHouseRequestParams(params, format, nativeProtocolVersion);
+
+      const response = await fetch(`${this.baseUrl}/?${params.toString()}`, {
         method: 'POST',
         body: query,
         headers: {
