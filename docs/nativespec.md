@@ -191,6 +191,7 @@ Each column in the block is serialized sequentially with the following structure
    - Present only when `client_revision >= DBMS_MIN_REVISION_WITH_CUSTOM_SERIALIZATION` (54454)
    - `UInt8 has_custom`: 0 or 1 indicating if custom serialization is used
    - If `has_custom == 1`: Binary-encoded serialization kind stack (for sparse columns, etc.)
+   - See [Native Protocol Versions](./native-protocol-versions.md) for the revision gates and kind-stack encoding
 4. **Column Data** (columnar, type-specific):
    - All values for this column across all rows
    - Serialization depends on the data type (see subsequent sections)
@@ -211,15 +212,17 @@ curl -s -XPOST "http://localhost:8123?default_format=Native" \
 
 ## 3. BlockInfo (TCP Protocol Only)
 
-`BlockInfo` contains additional metadata about the block, used primarily for distributed query execution and aggregation. It is **only present when using the TCP protocol** with `client_revision > 0`. When reading Native format over HTTP, `BlockInfo` is not included.
+`BlockInfo` contains additional metadata about the block, used primarily for distributed query execution and aggregation.
+
+Historical note: when HTTP `FORMAT Native` is requested without `client_protocol_version`, blocks start directly with `NumColumns` / `NumRows`. However, the ClickHouse server source writes `BlockInfo` for HTTP Native too when `client_protocol_version > 0`. See [Native Protocol Versions](./native-protocol-versions.md).
 
 ### When BlockInfo is Present
 
 `BlockInfo` appears at the very beginning of each block, before the block dimensions, when:
-- The block is transmitted over the TCP (Native) protocol
-- `client_revision > 0` (i.e., not reading from an old client)
+- `client_revision > 0`
+- the writer path is using the revision-aware Native block layout
 
-In the HTTP Native format context, `BlockInfo` is never serialized, and blocks start directly with NumColumns/NumRows.
+With legacy HTTP Native (`client_revision = 0` / parameter omitted), blocks start directly with `NumColumns` / `NumRows`.
 
 ### Field-Based Serialization Format
 
@@ -340,7 +343,7 @@ When reading a Native format stream over the TCP protocol with `server_revision 
 3. Stop when field number `0x00` is encountered
 4. Then proceed to read the block dimensions (NumColumns, NumRows) and column data
 
-**Note**: The HTTP Native format never includes `BlockInfo`, so HTTP readers should skip directly to reading NumColumns/NumRows.
+**Note**: HTTP readers must not assume `BlockInfo` is absent. It is absent in the legacy default path, but present when HTTP `FORMAT Native` is requested with a positive `client_protocol_version`.
 
 ---
 
@@ -3602,6 +3605,8 @@ SELECT * FROM dynamic_test FORMAT Native;
 ## 11. Protocol Revision Reference
 
 The Native format behavior varies based on the protocol revision (also called `client_revision` in the code). This enables backward compatibility while allowing the format to evolve with new features.
+
+For the request flow, exact source files, and the explorer's Native protocol presets, see [Native Protocol Versions](./native-protocol-versions.md).
 
 ### Revision Thresholds
 
