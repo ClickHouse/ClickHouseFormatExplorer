@@ -32,7 +32,7 @@
     "@types/react-dom": "^18.3.5",
     "@types/react-window": "^1.8.8",
     "@vitejs/plugin-react": "^4.3.4",
-    "electron": "^40.3.0",
+    "electron": "^40.8.4",
     "electron-builder": "^26.7.0",
     "eslint": "^9.17.0",
     "eslint-plugin-react-hooks": "^5.0.0",
