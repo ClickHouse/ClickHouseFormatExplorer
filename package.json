@@ -13,6 +13,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "capture": "node scripts/capture-native.mjs",
     "electron:dev": "ELECTRON=true vite dev",
     "electron:build": "ELECTRON=true vite build && electron-builder",
     "test:e2e": "ELECTRON=true vite build && npx playwright test"

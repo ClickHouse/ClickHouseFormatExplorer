@@ -39,6 +39,8 @@ export type ClickHouseType =
   | { kind: 'IPv4' }
   | { kind: 'IPv6' }
   | { kind: 'Bool' }
+  // Unit type — the inner type of Nullable(Nothing) (e.g. SELECT NULL)
+  | { kind: 'Nothing' }
   // Enums
   | { kind: 'Enum8'; values: Map<number, string> }
   | { kind: 'Enum16'; values: Map<number, string> }
@@ -109,6 +111,7 @@ export function typeToString(type: ClickHouseType): string {
     case 'IPv4':
     case 'IPv6':
     case 'Bool':
+    case 'Nothing':
     case 'Point':
     case 'Ring':
     case 'Polygon':
@@ -291,6 +294,9 @@ export function getTypeColor(type: ClickHouseType): string {
 
     case 'Bool':
       return 'var(--type-bool)';
+
+    case 'Nothing':
+      return 'var(--type-default)';
 
     // Advanced types
     case 'Variant':

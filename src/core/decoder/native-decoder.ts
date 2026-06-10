@@ -1,4 +1,6 @@
 import { FormatDecoder } from './format-decoder';
+import { BinaryReader } from './reader';
+import { formatIPv6 } from './format-utils';
 import { decodeLEB128, decodeLEB128BigInt } from './leb128';
 import { parseType } from '../parser/type-parser';
 import { ClickHouseType, typeToString } from '../types/clickhouse-types';
@@ -60,6 +62,26 @@ export class NativeDecoder extends FormatDecoder {
     };
   }
 
+  /**
+   * Decode exactly one Native Block at the shared reader's current offset and
+   * return its BlockNode, advancing the reader past the block. Used by the
+   * protocol decoder to render the Block carried inside a Data / Totals /
+   * Extremes / Log / ProfileEvents packet. Block and column AST node ids embed
+   * `index`, so the caller must pass a value unique across the whole stream.
+   */
+  decodeProtocolBlock(index: number): BlockNode {
+    return this.decodeBlock(index, { readColumnsWhenZeroRows: true });
+  }
+
+  /**
+   * The underlying byte reader. Exposed so a protocol decoder can interleave
+   * its own packet-framing reads (VarUInt, String, fixed-width ints) with
+   * block decoding against a single shared offset cursor.
+   */
+  get sharedReader(): BinaryReader {
+    return this.reader;
+  }
+
   private decodeBlocks(): { blocks: BlockNode[]; trailingNodes: AstNode[] } {
     const blocks: BlockNode[] = [];
     const trailingNodes: AstNode[] = [];
@@ -89,7 +111,7 @@ export class NativeDecoder extends FormatDecoder {
     return { blocks, trailingNodes };
   }
 
-  private decodeBlock(index: number): BlockNode {
+  private decodeBlock(index: number, opts?: { readColumnsWhenZeroRows?: boolean }): BlockNode {
     const startOffset = this.reader.offset;
     const blockInfoResult = this.protocolVersion > 0 ? this.decodeBlockInfo(index) : undefined;
     const blockInfo = blockInfoResult?.blockInfo;
@@ -153,8 +175,14 @@ export class NativeDecoder extends FormatDecoder {
       },
     };
 
-    // Empty block check
-    if (numColumns === 0 || numRows === 0) {
+    // Empty block check. A truly empty block (0 columns) is always terminal.
+    // A 0-row block with N>0 columns is a schema/header block: in the native
+    // *protocol* it still carries each column's name+type (and the custom
+    // serialization byte) on the wire, so it must be decoded rather than
+    // skipped. The HTTP Native path keeps the legacy behaviour of treating any
+    // 0-row block as terminal.
+    const skipColumns = numColumns === 0 || (numRows === 0 && !opts?.readColumnsWhenZeroRows);
+    if (skipColumns) {
       return {
         index,
         byteRange: { start: startOffset, end: this.reader.offset },
@@ -286,7 +314,7 @@ export class NativeDecoder extends FormatDecoder {
       case 'Tuple':
         return { values: this.decodeTupleColumn(type.elements, type.names, rowCount), prefixNodes: [] };
       case 'Nested':
-        throw new Error(`Native format: ${typeToString(type)} not yet implemented`);
+        return { values: this.decodeNestedColumn(type.fields, rowCount), prefixNodes: [] };
       // Geometry - Variant of geo types
       case 'Geometry':
         return { values: this.decodeGeometryColumn(rowCount), prefixNodes: [] };
@@ -889,6 +917,10 @@ export class NativeDecoder extends FormatDecoder {
       case 'Bool':
         return this.decodeBool();
 
+      // Nothing — one placeholder byte per row, content undefined
+      case 'Nothing':
+        return this.decodeNothing();
+
       // Date/Time
       case 'Date':
         return this.decodeDate();
@@ -1432,6 +1464,18 @@ export class NativeDecoder extends FormatDecoder {
     };
   }
 
+  // Nothing decoder — consumes one placeholder byte; the value is always null
+  private decodeNothing(): AstNode {
+    const { range } = this.reader.readUInt8();
+    return {
+      id: this.generateId(),
+      type: 'Nothing',
+      byteRange: range,
+      value: null,
+      displayValue: 'ø',
+    };
+  }
+
   // Bool decoder
   private decodeBool(): AstNode {
     const { value, range } = this.reader.readUInt8();
@@ -1596,12 +1640,11 @@ export class NativeDecoder extends FormatDecoder {
 
   private decodeIPv6(): AstNode {
     const { value: bytes, range } = this.reader.readBytes(16);
-    // Format as standard IPv6
-    const groups: string[] = [];
+    const groups: number[] = [];
     for (let i = 0; i < 16; i += 2) {
-      groups.push(((bytes[i] << 8) | bytes[i + 1]).toString(16));
+      groups.push((bytes[i] << 8) | bytes[i + 1]);
     }
-    const ip = groups.join(':');
+    const ip = formatIPv6(groups);
 
     return {
       id: this.generateId(),
@@ -1911,6 +1954,28 @@ export class NativeDecoder extends FormatDecoder {
       });
     }
 
+    return values;
+  }
+
+  /**
+   * Nested in Native format (flatten_nested = 0).
+   * Byte-identical to Array(Tuple(T1, ..., Tn)) with named fields: an offsets
+   * stream followed by one columnar stream per field. See docs/full_native_spec.md.
+   */
+  private decodeNestedColumn(
+    fields: { name: string; type: ClickHouseType }[],
+    rowCount: number,
+  ): AstNode[] {
+    const elementType: ClickHouseType = {
+      kind: 'Tuple',
+      elements: fields.map((f) => f.type),
+      names: fields.map((f) => f.name),
+    };
+    const typeStr = `Nested(${fields.map((f) => `${f.name} ${typeToString(f.type)}`).join(', ')})`;
+    const values = this.decodeArrayColumn(elementType, rowCount);
+    for (const node of values) {
+      node.type = typeStr;
+    }
     return values;
   }
 
@@ -2226,6 +2291,13 @@ export class NativeDecoder extends FormatDecoder {
       label: 'version',
     });
 
+    // FLATTENED (version 3): no max_dynamic_types, no internal-Variant mode word,
+    // discriminators in wire order with NULL = num_types. Selected by the query
+    // setting output_format_native_use_flattened_dynamic_and_json_serialization.
+    if (version === 3n) {
+      return this.decodeDynamicColumnFlattened(rowCount, startOffset, headerChildren);
+    }
+
     // Read max_dynamic_types (V1 only - in V2 this field doesn't exist or has different meaning)
     if (version === 1n) {
       const maxTypesStart = this.reader.offset;
@@ -2510,6 +2582,174 @@ export class NativeDecoder extends FormatDecoder {
   }
 
   /**
+   * Smallest unsigned integer width (in bytes) able to index `count` distinct
+   * values, matching ClickHouse's getSmallestIndexesType: UInt8/16/32/64.
+   */
+  private smallestIndexWidth(count: number): number {
+    if (count <= 0xff) return 1;
+    if (count <= 0xffff) return 2;
+    if (count <= 0xffffffff) return 4;
+    return 8;
+  }
+
+  private readDiscriminator(width: number): number {
+    switch (width) {
+      case 1:
+        return this.reader.readUInt8().value;
+      case 2:
+        return this.reader.readUInt16LE().value;
+      case 4:
+        return this.reader.readUInt32LE().value;
+      case 8:
+        return Number(this.reader.readUInt64LE().value);
+      default:
+        throw new Error(`Native format: unsupported discriminator width ${width}`);
+    }
+  }
+
+  /**
+   * Decode a FLATTENED (version 3) Dynamic column. The version word has already
+   * been consumed. Layout (see docs/full_native_spec.md → Dynamic):
+   *   [VarUInt num_types]
+   *   [num_types × String]            type names, in wire order
+   *   [per type: its state prefix]    empty for leaf types
+   *   [per block with rows > 0]:
+   *     [num_rows × discriminator]    width = smallest index for num_types + 1;
+   *                                   NULL discriminator = num_types
+   *     [for each type i, in wire order: values for rows whose disc == i]
+   */
+  private decodeDynamicColumnFlattened(
+    rowCount: number,
+    startOffset: number,
+    headerChildren: AstNode[],
+  ): AstNode[] {
+    // num_types
+    const numTypesStart = this.reader.offset;
+    const { value: numTypes } = decodeLEB128(this.reader);
+    headerChildren.push({
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: numTypesStart, end: this.reader.offset },
+      value: numTypes,
+      displayValue: numTypes.toString(),
+      label: 'num_dynamic_types',
+    });
+
+    // Type names (wire order)
+    const typeNames: string[] = [];
+    const typeNameNodes: AstNode[] = [];
+    const typeNamesStart = this.reader.offset;
+    for (let i = 0; i < numTypes; i++) {
+      const node = this.decodeString();
+      node.label = `[${i}]`;
+      typeNames.push(node.value as string);
+      typeNameNodes.push(node);
+    }
+    if (numTypes > 0) {
+      headerChildren.push({
+        id: this.generateId(),
+        type: 'Array(String)',
+        byteRange: { start: typeNamesStart, end: this.reader.offset },
+        value: typeNames,
+        displayValue: `[${typeNames.map((t) => `"${t}"`).join(', ')}]`,
+        label: 'type_names',
+        children: typeNameNodes,
+      });
+    }
+
+    const variants = typeNames.map((name) => parseType(name));
+    // Per-type state prefix (empty for leaf types; recurse for stateful inner types).
+    const variantPrefixes = variants.map((v) => this.readColumnPrefix(v));
+
+    // Discriminators: width by num_types + 1 (the extra slot is NULL = num_types).
+    const nullDiscriminator = numTypes;
+    const discWidth = this.smallestIndexWidth(numTypes + 1);
+    const discriminatorsStart = this.reader.offset;
+    const discriminators: number[] = [];
+    const discNodes: AstNode[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const discStart = this.reader.offset;
+      const disc = this.readDiscriminator(discWidth);
+      discriminators.push(disc);
+      const label = disc === nullDiscriminator ? 'NULL' : (typeNames[disc] ?? `unknown(${disc})`);
+      discNodes.push({
+        id: this.generateId(),
+        type: `UInt${discWidth * 8}`,
+        byteRange: { start: discStart, end: this.reader.offset },
+        value: disc,
+        displayValue: `${disc} (${label})`,
+        label: `[${i}]`,
+      });
+    }
+    if (rowCount > 0) {
+      headerChildren.push({
+        id: this.generateId(),
+        type: `Array(UInt${discWidth * 8})`,
+        byteRange: { start: discriminatorsStart, end: this.reader.offset },
+        value: discriminators,
+        displayValue: `[${discriminators.join(', ')}]`,
+        label: 'discriminators',
+        children: discNodes,
+      });
+    }
+    const headerEndOffset = this.reader.offset;
+
+    // Count rows per type and decode each type's dense run in wire order.
+    const countPerType = new Array<number>(numTypes).fill(0);
+    for (const disc of discriminators) {
+      if (disc !== nullDiscriminator && disc < numTypes) countPerType[disc]++;
+    }
+    const runData: AstNode[][] = [];
+    for (let t = 0; t < numTypes; t++) {
+      runData[t] = countPerType[t] > 0
+        ? this.decodeColumnWithPrefix(variants[t], countPerType[t], variantPrefixes[t])
+        : [];
+    }
+
+    // Reconstruct the dense column.
+    const positions = new Array<number>(numTypes).fill(0);
+    const values: AstNode[] = [];
+    for (let i = 0; i < rowCount; i++) {
+      const disc = discriminators[i];
+      if (disc === nullDiscriminator || disc >= numTypes) {
+        values.push({
+          id: this.generateId(),
+          type: 'Dynamic(NULL)',
+          byteRange: { start: startOffset, end: this.reader.offset },
+          value: null,
+          displayValue: 'NULL',
+          label: `[${i}]`,
+          metadata: { discriminator: disc, actualType: 'NULL', serializationVersion: 3 },
+        });
+        continue;
+      }
+      const node = runData[disc][positions[disc]++];
+      node.label = 'value';
+      values.push({
+        id: this.generateId(),
+        type: `Dynamic(${node.type})`,
+        byteRange: node.byteRange,
+        value: node.value,
+        displayValue: node.displayValue,
+        label: `[${i}]`,
+        children: [node],
+        metadata: { discriminator: disc, actualType: node.type, serializationVersion: 3 },
+      });
+    }
+
+    const headerNode: AstNode = {
+      id: this.generateId(),
+      type: 'Dynamic.Header',
+      byteRange: { start: startOffset, end: headerEndOffset },
+      value: { version: 3, numTypes, typeNames },
+      displayValue: `Dynamic(${numTypes} types, v3 FLATTENED)`,
+      label: 'header',
+      children: headerChildren,
+    };
+    return [headerNode, ...values];
+  }
+
+  /**
    * Decode binary type index used in Dynamic's SharedVariant (V2 format)
    */
   private decodeDynamicBinaryType(typeIdx: number): ClickHouseType {
@@ -2685,9 +2925,21 @@ export class NativeDecoder extends FormatDecoder {
     const jsonType = type as { kind: 'JSON'; typedPaths?: Map<string, ClickHouseType>; maxDynamicPaths?: number };
     const typedSubColumns = jsonType.typedPaths;
 
-    // Always use the V1 format decoder - it handles all JSON types correctly
-    // The format is: version + max_dynamic_paths + num_dynamic_paths + path_names +
-    //                dynamic_structures + typed_path_data + dynamic_data + shared_offsets
+    // Dispatch on the Object serialization version (first 8 bytes, UInt64 LE):
+    //   1 = Tier-1 String fallback (output_format_native_write_json_as_string)
+    //   3 = FLATTENED Object (output_format_native_use_flattened_dynamic_and_json_serialization)
+    //   0 / 2 = default V1 / V2 Object (max_dynamic_paths + dynamic structures + shared data)
+    const versionPeek = this.reader.peekBytes(8);
+    let peekedVersion = 0n;
+    for (let i = 7; i >= 0; i--) {
+      peekedVersion = (peekedVersion << 8n) | BigInt(versionPeek[i] ?? 0);
+    }
+    if (peekedVersion === 1n) {
+      return this.decodeJSONColumnStringFallback(rowCount, startOffset);
+    }
+    if (peekedVersion === 3n) {
+      return this.decodeJSONColumnFlattened(type, rowCount, startOffset);
+    }
     return this.decodeJSONColumnV1(type, rowCount, startOffset);
 
     // Legacy format: reads version as max_dynamic_paths (coincidentally works when version=0)
@@ -3541,6 +3793,264 @@ export class NativeDecoder extends FormatDecoder {
     const jsonType = type as { kind: 'JSON'; typedPaths?: Map<string, ClickHouseType> };
     const structure = this.readJSONColumnStructure(jsonType.typedPaths);
     return this.readJSONColumnData(structure, rowCount, startOffset);
+  }
+
+  /**
+   * Tier-1 JSON-as-String fallback (Object serialization version 1). The column
+   * is a UInt64 state prefix (= 1) followed by a standard String column whose
+   * values are the JSON text for each row. See docs/full_native_spec.md.
+   */
+  private decodeJSONColumnStringFallback(rowCount: number, startOffset: number): AstNode[] {
+    const versionNode = this.decodeUInt64();
+    versionNode.label = 'version';
+
+    const values: AstNode[] = [];
+    for (let row = 0; row < rowCount; row++) {
+      const strNode = this.decodeString();
+      const text = strNode.value as string;
+      let parsed: unknown = text;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = text;
+      }
+      values.push({
+        id: this.generateId(),
+        type: 'JSON',
+        byteRange: { start: row === 0 ? startOffset : strNode.byteRange.start, end: strNode.byteRange.end },
+        value: parsed,
+        displayValue: text,
+        label: `[${row}]`,
+        children: row === 0 ? [versionNode, strNode] : [strNode],
+        metadata: { serializationVersion: 1, jsonText: text },
+      });
+    }
+    return values;
+  }
+
+  /**
+   * FLATTENED JSON (Object serialization version 3). One sub-column per path,
+   * no shared-data store. Two-phase layout: all path state prefixes first, then
+   * all path data. Typed paths are decoded in their declared type; dynamic paths
+   * are each a FLATTENED Dynamic column. See docs/full_native_spec.md.
+   */
+  private decodeJSONColumnFlattened(type: ClickHouseType, rowCount: number, startOffset: number): AstNode[] {
+    const jsonType = type as { kind: 'JSON'; typedPaths?: Map<string, ClickHouseType> };
+    const structureChildren: AstNode[] = [];
+
+    const versionNode = this.decodeUInt64();
+    versionNode.label = 'version';
+    structureChildren.push(versionNode);
+
+    // num_dynamic_paths + dynamic path names (wire/sorted order)
+    const numDynStart = this.reader.offset;
+    const { value: numDynamicPaths } = decodeLEB128(this.reader);
+    structureChildren.push({
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: numDynStart, end: this.reader.offset },
+      value: numDynamicPaths,
+      displayValue: String(numDynamicPaths),
+      label: 'num_dynamic_paths',
+    });
+    const dynamicPathNames: string[] = [];
+    for (let i = 0; i < numDynamicPaths; i++) {
+      const node = this.decodeString();
+      node.label = `dynamic_path[${i}]`;
+      structureChildren.push(node);
+      dynamicPathNames.push(node.value as string);
+    }
+
+    // Typed paths come from the type string, decoded in sorted-by-name order.
+    const typedPaths = jsonType.typedPaths
+      ? Array.from(jsonType.typedPaths.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+      : [];
+
+    // --- Prefix phase: typed path prefixes (empty for leaf), then dynamic Dynamic prefixes ---
+    const typedPrefixes = typedPaths.map(([, t]) => this.readColumnPrefix(t));
+    const dynamicStructures = dynamicPathNames.map((name) =>
+      this.readFlattenedDynamicStructure(structureChildren, name),
+    );
+
+    // --- Data phase: typed path data, then dynamic path data ---
+    const typedData = new Map<string, AstNode[]>();
+    typedPaths.forEach(([name, t], idx) => {
+      typedData.set(name, this.decodeColumnWithPrefix(t, rowCount, typedPrefixes[idx]));
+    });
+    const dynamicData = dynamicStructures.map((s) => this.readFlattenedDynamicData(s, rowCount));
+
+    // Assemble per-row objects.
+    const values: AstNode[] = [];
+    for (let row = 0; row < rowCount; row++) {
+      const children: AstNode[] = row === 0 ? [...structureChildren] : [];
+      const jsonValue: Record<string, unknown> = {};
+
+      for (const [name] of typedPaths) {
+        const node = typedData.get(name)![row];
+        this.setNestedValue(jsonValue, name, node.value);
+        children.push({
+          id: this.generateId(),
+          type: 'JSON.typed_path',
+          byteRange: node.byteRange,
+          value: { [name]: node.value },
+          displayValue: `${name}: ${node.displayValue}`,
+          label: name,
+          children: [node],
+        });
+      }
+      dynamicPathNames.forEach((name, i) => {
+        const node = dynamicData[i][row];
+        // A dynamic path that is NULL for this row contributes no key.
+        if (node.value !== null) {
+          this.setNestedValue(jsonValue, name, node.value);
+        }
+        children.push({
+          id: this.generateId(),
+          type: 'JSON.dynamic_path',
+          byteRange: node.byteRange,
+          value: { [name]: node.value },
+          displayValue: `${name}: ${node.displayValue}`,
+          label: name,
+          children: [node],
+        });
+      });
+
+      const totalPaths = typedPaths.length + numDynamicPaths;
+      values.push({
+        id: this.generateId(),
+        type: 'JSON',
+        byteRange: { start: startOffset, end: this.reader.offset },
+        value: jsonValue,
+        displayValue: `{${totalPaths} paths}`,
+        label: `[${row}]`,
+        children,
+        metadata: { serializationVersion: 3 },
+      });
+    }
+    return values;
+  }
+
+  /**
+   * Read a FLATTENED Dynamic state prefix (version 3): version UInt64 + num_types
+   * VarUInt + type-name Strings + per-type nested prefixes (empty for leaf types).
+   * The structure nodes are appended to `parentChildren` for the AST.
+   */
+  private readFlattenedDynamicStructure(
+    parentChildren: AstNode[],
+    pathName: string,
+  ): { numTypes: number; typeNames: string[]; variants: ClickHouseType[]; variantPrefixes: unknown[] } {
+    const start = this.reader.offset;
+    const children: AstNode[] = [];
+
+    const versionNode = this.decodeUInt64();
+    versionNode.label = 'dynamic_version';
+    children.push(versionNode);
+    if (versionNode.value !== 3n) {
+      throw new Error(
+        `Native format: FLATTENED JSON dynamic path expected Dynamic version 3, got ${versionNode.value}`,
+      );
+    }
+
+    const numTypesStart = this.reader.offset;
+    const { value: numTypes } = decodeLEB128(this.reader);
+    children.push({
+      id: this.generateId(),
+      type: 'VarUInt',
+      byteRange: { start: numTypesStart, end: this.reader.offset },
+      value: numTypes,
+      displayValue: String(numTypes),
+      label: 'num_dynamic_types',
+    });
+
+    const typeNames: string[] = [];
+    for (let t = 0; t < numTypes; t++) {
+      const node = this.decodeString();
+      node.label = `type_name[${t}]`;
+      children.push(node);
+      typeNames.push(node.value as string);
+    }
+    const variants = typeNames.map((name) => parseType(name));
+    const variantPrefixes = variants.map((v) => this.readColumnPrefix(v));
+
+    parentChildren.push({
+      id: this.generateId(),
+      type: 'Dynamic.structure',
+      byteRange: { start, end: this.reader.offset },
+      value: { typeNames, numTypes },
+      displayValue: `Dynamic structure for "${pathName}" (${numTypes} types, v3)`,
+      label: `${pathName}.structure`,
+      children,
+    });
+
+    return { numTypes, typeNames, variants, variantPrefixes };
+  }
+
+  /**
+   * Read the per-block data of a FLATTENED Dynamic sub-column given its already
+   * read structure: num_rows discriminators (width by num_types + 1, NULL =
+   * num_types) followed by each type's dense run in wire order.
+   */
+  private readFlattenedDynamicData(
+    struct: { numTypes: number; typeNames: string[]; variants: ClickHouseType[]; variantPrefixes: unknown[] },
+    rowCount: number,
+  ): AstNode[] {
+    const { numTypes, typeNames, variants, variantPrefixes } = struct;
+    const nullDiscriminator = numTypes;
+    const discWidth = this.smallestIndexWidth(numTypes + 1);
+
+    const discriminators: number[] = [];
+    const discRanges: ByteRange[] = [];
+    for (let r = 0; r < rowCount; r++) {
+      const start = this.reader.offset;
+      discriminators.push(this.readDiscriminator(discWidth));
+      discRanges.push({ start, end: this.reader.offset });
+    }
+
+    const countPerType = new Array<number>(numTypes).fill(0);
+    for (const disc of discriminators) {
+      if (disc !== nullDiscriminator && disc < numTypes) countPerType[disc]++;
+    }
+    const runData: AstNode[][] = [];
+    for (let t = 0; t < numTypes; t++) {
+      runData[t] = countPerType[t] > 0
+        ? this.decodeColumnWithPrefix(variants[t], countPerType[t], variantPrefixes[t])
+        : [];
+    }
+
+    const positions = new Array<number>(numTypes).fill(0);
+    const values: AstNode[] = [];
+    for (let r = 0; r < rowCount; r++) {
+      const disc = discriminators[r];
+      const discNode: AstNode = {
+        id: this.generateId(),
+        type: `UInt${discWidth * 8}`,
+        byteRange: discRanges[r],
+        value: disc,
+        displayValue: `${disc} → ${disc === nullDiscriminator ? 'NULL' : (typeNames[disc] ?? `unknown(${disc})`)}`,
+        label: 'discriminator',
+      };
+      if (disc === nullDiscriminator || disc >= numTypes) {
+        values.push({
+          id: this.generateId(),
+          type: 'Dynamic(NULL)',
+          byteRange: discRanges[r],
+          value: null,
+          displayValue: 'NULL',
+          children: [discNode],
+        });
+        continue;
+      }
+      const node = runData[disc][positions[disc]++];
+      values.push({
+        id: this.generateId(),
+        type: `Dynamic(${node.type})`,
+        byteRange: { start: discRanges[r].start, end: node.byteRange.end },
+        value: node.value,
+        displayValue: node.displayValue,
+        children: [discNode, node],
+      });
+    }
+    return values;
   }
 
   /**

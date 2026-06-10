@@ -135,4 +135,6 @@ export interface ParsedData {
   blocks?: BlockNode[];
   /** Trailing protocol nodes not attached to data rows/blocks (for example terminal Native blocks) */
   trailingNodes?: AstNode[];
+  /** Optional decoder-specific metadata (for example the negotiated protocol version). */
+  metadata?: Record<string, unknown>;
 }

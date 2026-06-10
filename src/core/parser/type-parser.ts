@@ -60,6 +60,7 @@ export function parseType(typeString: string): ClickHouseType {
       UUID: { kind: 'UUID' },
       IPv4: { kind: 'IPv4' },
       IPv6: { kind: 'IPv6' },
+      Nothing: { kind: 'Nothing' },
       Point: { kind: 'Point' },
       Ring: { kind: 'Ring' },
       Polygon: { kind: 'Polygon' },

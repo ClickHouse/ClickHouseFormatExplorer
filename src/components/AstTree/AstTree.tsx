@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect } from 'react';
 import { useStore } from '../../store/store';
 import { AstNode } from '../../core/types/ast';
+import { ClickHouseFormat } from '../../core/types/formats';
 import '../../styles/ast-tree.css';
 
 function formatNodeCopyText(node: AstNode, label?: string): string {
@@ -206,8 +207,12 @@ export function AstTree() {
     );
   }
 
+  const isProtocol = parsedData.format === ClickHouseFormat.NativeProtocol;
   const isBlockBased = !!parsedData.blocks;
   const itemCount = parsedData.rows?.length ?? parsedData.blocks?.length ?? 0;
+  const packetCount = isProtocol
+    ? (parsedData.trailingNodes ?? []).reduce((sum, s) => sum + (s.children?.length ?? 0), 0)
+    : 0;
 
   return (
     <div className="ast-tree">
@@ -219,8 +224,17 @@ export function AstTree() {
           Collapse All
         </button>
         <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 11 }}>
-          {parsedData.totalBytes} bytes | {itemCount} {isBlockBased ? 'block(s)' : 'row(s)'} |{' '}
-          {parsedData.header.columnCount} column(s)
+          {isProtocol ? (
+            <>
+              {parsedData.totalBytes} bytes | {packetCount} packet(s) | protocol v
+              {String(parsedData.metadata?.negotiatedVersion ?? '?')}
+            </>
+          ) : (
+            <>
+              {parsedData.totalBytes} bytes | {itemCount} {isBlockBased ? 'block(s)' : 'row(s)'} |{' '}
+              {parsedData.header.columnCount} column(s)
+            </>
+          )}
         </span>
       </div>
 

@@ -1,5 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+// @ts-expect-error - plain ESM helper, no type declarations
+import { captureServerPlugin } from './scripts/capture-middleware.mjs'
 
 const isElectron = !!process.env.ELECTRON;
 
@@ -37,7 +39,7 @@ export default defineConfig(async () => {
   }
 
   return {
-    plugins: [react(), ...electronPlugins],
+    plugins: [react(), captureServerPlugin(), ...electronPlugins],
     server: {
       proxy: {
         '/clickhouse': {
