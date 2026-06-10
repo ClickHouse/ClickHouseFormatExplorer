@@ -4,6 +4,8 @@
 export enum ClickHouseFormat {
   RowBinaryWithNamesAndTypes = 'RowBinaryWithNamesAndTypes',
   Native = 'Native',
+  /** Native TCP protocol capture (packet stream), not an HTTP FORMAT. */
+  NativeProtocol = 'NativeProtocol',
 }
 
 /**
@@ -28,8 +30,14 @@ export const FORMAT_METADATA: Record<ClickHouseFormat, FormatMetadata> = {
   },
   [ClickHouseFormat.Native]: {
     id: ClickHouseFormat.Native,
-    displayName: 'Native',
-    description: 'Column-oriented binary format with blocks',
+    displayName: 'Native format (HTTP)',
+    description: 'Column-oriented Native format body fetched over HTTP',
+    supportsBlocks: true,
+  },
+  [ClickHouseFormat.NativeProtocol]: {
+    id: ClickHouseFormat.NativeProtocol,
+    displayName: 'Native protocol + format (TCP)',
+    description: 'Full native TCP protocol packet stream (handshake, packets, and Native blocks) captured via proxy',
     supportsBlocks: true,
   },
 };

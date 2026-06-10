@@ -1,4 +1,12 @@
 <?xml version="1.0"?>
+<!--
+  Two users back the explorer:
+    viewer  - readonly (default). Used when READONLY != 0.
+    writer  - read-write, can INSERT. Used when READONLY=0 (internal deployments).
+  The container's entrypoint scripts select which one the HTTP proxy and the
+  capture server connect as, based on the READONLY environment variable.
+  Both profiles enable the experimental types so format exploration works.
+-->
 <clickhouse>
     <users>
         <viewer>
@@ -10,6 +18,15 @@
             <quota>default</quota>
             <access_management>0</access_management>
         </viewer>
+        <writer>
+            <password></password>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>readwrite</profile>
+            <quota>default</quota>
+            <access_management>0</access_management>
+        </writer>
     </users>
     <profiles>
         <readonly>
@@ -22,5 +39,14 @@
             <allow_experimental_qbit_type>1</allow_experimental_qbit_type>
             <allow_suspicious_low_cardinality_types>1</allow_suspicious_low_cardinality_types>
         </readonly>
+        <readwrite>
+            <!-- readonly defaults to 0: SELECT, INSERT and DDL allowed -->
+            <allow_experimental_variant_type>1</allow_experimental_variant_type>
+            <allow_experimental_dynamic_type>1</allow_experimental_dynamic_type>
+            <allow_experimental_json_type>1</allow_experimental_json_type>
+            <allow_suspicious_variant_types>1</allow_suspicious_variant_types>
+            <allow_experimental_qbit_type>1</allow_experimental_qbit_type>
+            <allow_suspicious_low_cardinality_types>1</allow_suspicious_low_cardinality_types>
+        </readwrite>
     </profiles>
 </clickhouse>

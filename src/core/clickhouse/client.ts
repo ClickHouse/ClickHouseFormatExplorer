@@ -1,12 +1,14 @@
 import { ClickHouseFormat } from '../types/formats';
 import { DEFAULT_NATIVE_PROTOCOL_VERSION } from '../types/native-protocol';
 import { appendClickHouseRequestParams } from './request-params';
+import { parseChprotoDump } from '../decoder/protocol-dump';
 
 /**
  * Electron IPC API exposed via preload script
  */
 interface ElectronAPI {
   executeQuery(options: { query: string; format: string; nativeProtocolVersion?: number }): Promise<ArrayBuffer>;
+  captureNativeProtocol(options: { query: string }): Promise<{ c2s: Uint8Array; s2c: Uint8Array; meta?: Record<string, unknown> }>;
   getConfig(): Promise<{ host: string }>;
   saveConfig(config: { host: string }): Promise<void>;
 }
@@ -33,11 +35,22 @@ export interface QueryResult {
   timing: number;
 }
 
+export interface ProtocolCaptureResult {
+  /** Concatenated [c2s][s2c] buffer (rawData for the hex viewer). */
+  combined: Uint8Array;
+  /** Split point: byte length of the client→server portion. */
+  c2sLength: number;
+  timing: number;
+  meta?: Record<string, unknown>;
+}
+
 export class ClickHouseClient {
   private baseUrl: string;
+  private captureUrl: string;
 
-  constructor(baseUrl = '/clickhouse') {
+  constructor(baseUrl = '/clickhouse', captureUrl = '/capture') {
     this.baseUrl = baseUrl;
+    this.captureUrl = captureUrl;
   }
 
   /**
@@ -97,6 +110,52 @@ export class ClickHouseClient {
       clearTimeout(timeoutId);
     }
   }
+
+  /**
+   * Capture a query over the native TCP protocol. Drives clickhouse-client
+   * through a capturing proxy and returns both per-direction streams
+   * concatenated for the protocol decoder.
+   *
+   * - Desktop (Electron): the proxy runs in the main process via IPC.
+   * - Web: POSTs the SQL to the `/capture` endpoint (Vite dev/preview server),
+   *   which runs the proxy server-side and returns a `.chproto` dump. The
+   *   browser cannot open raw TCP itself, so this requires the dev/preview
+   *   server (or another host serving `/capture`).
+   */
+  async captureProtocol(query: string): Promise<ProtocolCaptureResult> {
+    const startTime = performance.now();
+
+    if (window.electronAPI?.captureNativeProtocol) {
+      const { c2s, s2c, meta } = await window.electronAPI.captureNativeProtocol({ query });
+      return assembleCapture(new Uint8Array(c2s), new Uint8Array(s2c), meta, startTime);
+    }
+
+    const response = await fetch(this.captureUrl, {
+      method: 'POST',
+      body: query,
+      headers: { 'Content-Type': 'text/plain' },
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Capture failed (${response.status}): ${text}`);
+    }
+    const dump = new Uint8Array(await response.arrayBuffer());
+    const { c2s, s2c, meta } = parseChprotoDump(dump);
+    return assembleCapture(c2s, s2c, meta, startTime);
+  }
+}
+
+/** Concatenate the two per-direction streams and record the split point. */
+function assembleCapture(
+  c2s: Uint8Array,
+  s2c: Uint8Array,
+  meta: Record<string, unknown> | undefined,
+  startTime: number,
+): ProtocolCaptureResult {
+  const combined = new Uint8Array(c2s.length + s2c.length);
+  combined.set(c2s, 0);
+  combined.set(s2c, c2s.length);
+  return { combined, c2sLength: c2s.length, timing: performance.now() - startTime, meta };
 }
 
 // Default client instance

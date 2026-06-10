@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { appendClickHouseRequestParams } from '../src/core/clickhouse/request-params';
 import { DEFAULT_NATIVE_PROTOCOL_VERSION } from '../src/core/types/native-protocol';
+import { captureNativeQuery } from './native-capture';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -16,9 +17,20 @@ const defaultConfigPath = path.join(configDir, 'config.default.json');
 
 interface Config {
   host: string;
+  /** Native TCP connection used for NativeProtocol captures. */
+  nativeHost?: string;
+  nativePort?: number;
+  user?: string;
+  password?: string;
 }
 
-const DEFAULT_CONFIG: Config = { host: 'http://localhost:8123' };
+const DEFAULT_CONFIG: Config = {
+  host: 'http://localhost:8123',
+  nativeHost: 'localhost',
+  nativePort: 9000,
+  user: 'default',
+  password: '',
+};
 
 function loadConfig(): Config {
   for (const p of [configPath, defaultConfigPath]) {
@@ -89,6 +101,25 @@ ipcMain.handle('execute-query', async (_event, options: { query: string; format:
   }
 
   return await response.arrayBuffer();
+});
+
+// IPC: Capture a query over the native TCP protocol via the proxy harness.
+// Returns the two per-direction byte streams for the protocol decoder.
+ipcMain.handle('capture-native-protocol', async (_event, options: { query: string }) => {
+  const config = loadConfig();
+  const result = await captureNativeQuery({
+    query: options.query,
+    host: config.nativeHost ?? 'localhost',
+    port: config.nativePort ?? 9000,
+    user: config.user,
+    password: config.password,
+    settings: CLICKHOUSE_SETTINGS,
+  });
+  return {
+    c2s: new Uint8Array(result.c2s),
+    s2c: new Uint8Array(result.s2c),
+    meta: result.meta,
+  };
 });
 
 // IPC: Get config

@@ -1,4 +1,5 @@
 import { FormatDecoder } from './format-decoder';
+import { formatIPv6 } from './format-utils';
 import { decodeLEB128 } from './leb128';
 import { parseType } from '../parser/type-parser';
 import { ClickHouseType, typeToString } from '../types/clickhouse-types';
@@ -167,6 +168,10 @@ export class RowBinaryDecoder extends FormatDecoder {
       // Bool
       case 'Bool':
         return this.decodeBool();
+
+      // Nothing — one placeholder byte per row, value is always null
+      case 'Nothing':
+        return this.decodeNothing();
 
       // Date/Time
       case 'Date':
@@ -552,6 +557,18 @@ export class RowBinaryDecoder extends FormatDecoder {
     };
   }
 
+  // Nothing decoder — consumes one placeholder byte; the value is always null
+  private decodeNothing(): AstNode {
+    const { range } = this.reader.readUInt8();
+    return {
+      id: this.generateId(),
+      type: 'Nothing',
+      byteRange: range,
+      value: null,
+      displayValue: 'ø',
+    };
+  }
+
   // Date/Time decoders
   private decodeDate(): AstNode {
     const { value, range } = this.reader.readUInt16LE();
@@ -706,12 +723,11 @@ export class RowBinaryDecoder extends FormatDecoder {
 
   private decodeIPv6(): AstNode {
     const { value: bytes, range } = this.reader.readBytes(16);
-    // Format as standard IPv6
-    const groups: string[] = [];
+    const groups: number[] = [];
     for (let i = 0; i < 16; i += 2) {
-      groups.push(((bytes[i] << 8) | bytes[i + 1]).toString(16));
+      groups.push((bytes[i] << 8) | bytes[i + 1]);
     }
-    const ip = groups.join(':');
+    const ip = formatIPv6(groups);
 
     return {
       id: this.generateId(),

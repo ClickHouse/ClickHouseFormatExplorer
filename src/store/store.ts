@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { clickhouse, DEFAULT_QUERY } from '../core/clickhouse/client';
 import { createDecoder } from '../core/decoder';
+import { parseChprotoDump } from '../core/decoder/protocol-dump';
 import { AstNode, ParsedData } from '../core/types/ast';
 import { ClickHouseFormat } from '../core/types/formats';
 import { DEFAULT_NATIVE_PROTOCOL_VERSION } from '../core/types/native-protocol';
@@ -91,6 +92,14 @@ function getDefaultExpanded(parsedData: ParsedData): Set<string> {
   parsedData.blocks?.forEach((_, i) => {
     expanded.add(`block-${i}`);
   });
+  // Protocol captures: expand the two direction sections and each packet so
+  // the conversation timeline is visible, but leave packet fields collapsed.
+  if (parsedData.format === ClickHouseFormat.NativeProtocol) {
+    parsedData.trailingNodes?.forEach((section) => {
+      expanded.add(section.id);
+      section.children?.forEach((packet) => expanded.add(packet.id));
+    });
+  }
   return expanded;
 }
 
@@ -151,6 +160,16 @@ export const useStore = create<AppState>((set, get) => ({
     set(getLoadingState());
 
     try {
+      if (format === ClickHouseFormat.NativeProtocol) {
+        // Capture the full native TCP packet stream via the proxy harness
+        // (desktop only) and decode the conversation, not just one format body.
+        const { combined, c2sLength, timing } = await clickhouse.captureProtocol(query);
+        const decoder = createDecoder(combined, format, { protocolC2SLength: c2sLength });
+        const parsed = decoder.decode();
+        set(getSuccessState(combined, parsed, timing));
+        return;
+      }
+
       const { data, timing } = await clickhouse.query({ query, format, nativeProtocolVersion });
       const decoder = createDecoder(data, format, { nativeProtocolVersion });
       const parsed = decoder.decode();
@@ -168,6 +187,22 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const arrayBuffer = await file.arrayBuffer();
       const data = new Uint8Array(arrayBuffer);
+
+      // A .chproto capture (or the NativeProtocol format) is decoded as a
+      // protocol packet stream. The dump carries the c2s/s2c split itself.
+      if (file.name.endsWith('.chproto') || format === ClickHouseFormat.NativeProtocol) {
+        const capture = parseChprotoDump(data);
+        const combined = new Uint8Array(capture.c2s.length + capture.s2c.length);
+        combined.set(capture.c2s, 0);
+        combined.set(capture.s2c, capture.c2s.length);
+        const decoder = createDecoder(combined, ClickHouseFormat.NativeProtocol, {
+          protocolC2SLength: capture.c2s.length,
+        });
+        const parsed = decoder.decode();
+        set(getSuccessState(combined, parsed, null));
+        return;
+      }
+
       const decoder = createDecoder(data, format, { nativeProtocolVersion });
       const parsed = decoder.decode();
       set(getSuccessState(data, parsed, null));
