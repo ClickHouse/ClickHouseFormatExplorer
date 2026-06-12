@@ -66,17 +66,26 @@ through it — the proxy does not spawn the client itself.
 - **Plaintext/uncompressed only** (same constraint as today). TLS/compressed
   streams are unsupported — error clearly and document it.
 
-#### `chfx schema` / `--help`
-Machine-readable description of commands, flags, and the output JSON shape for
-agent discovery.
+#### `--help`
+Human-readable help (`chfx --help`, `chfx <command> --help`). A standalone
+machine-readable `schema` command was considered but **dropped** while the CLI
+has a single real command: `--help` covers human discovery and the `decode`
+output is already self-describing (carries `schemaVersion` and the byteRange/bytes
+conventions inline). Revisit a structured-discovery surface (a `schema` command
+or `--help --json`) once `query`/`proxy` add a multi-command contract.
 
 ### Output (item 4)
 - **Reuse the web `ParsedData`/`AstNode` shape verbatim**, serialized to JSON,
   wrapped with top-level metadata: tool/schema version, format, negotiated
-  protocol version (for captures), and the raw bytes.
-- **Raw bytes inline, once**, as a top-level **hex** string. Agents read a node's
-  `byteRange {start, end}` (exclusive end) and slice the hex to inspect bytes —
-  no second command or sidecar file.
+  protocol version (for captures), `nodeBytes`, and the raw bytes.
+- **Top-level `bytesHex`**: the whole decoded buffer encoded once as hex
+  (for NativeProtocol this is the combined c2s+s2c stream the ranges index into).
+- **Per-node inline bytes (default on)**: every node with a `byteRange {start,
+  end}` (exclusive end) also carries its own raw bytes as a `bytes` hex string,
+  so a consumer reads a value's bytes directly without slicing `bytesHex`. This
+  trades output size (parents duplicate children's bytes) for convenience;
+  `--no-node-bytes` omits them and falls back to range lookups against `bytesHex`.
+- JSON-safe values: bigints → decimal strings, byte blobs → hex.
 
 ### Tests & docs (cross-cutting)
 - **Thorough CLI tests/fixtures**: decode against the existing

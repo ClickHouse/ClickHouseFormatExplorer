@@ -13,6 +13,7 @@ A tool for visualizing ClickHouse RowBinary and Native format data. Features an 
 - **Interactive Highlighting**: Selecting a node in the tree highlights corresponding bytes in the hex view (and vice versa)
 - **Full Type Support**: All ClickHouse types including Variant, Dynamic, JSON, Geo types, Nested, etc.
 - **Desktop App**: Electron app that connects to your existing ClickHouse server (no bundled DB)
+- **CLI (`chfx`)**: Decode `.chproto` / Native / RowBinary dumps to structured JSON from the terminal — agent-friendly
 
 ## Quick Start (Docker)
 
@@ -40,6 +41,73 @@ CH_VERSION=24.3 docker compose build
 ```
 
 The version is baked into the image — rebuild to change it.
+
+## CLI (`chfx`)
+
+A command-line tool that decodes a binary wire-format dump into structured JSON —
+the same AST the web UI renders, plus the raw bytes — so it can be scripted or
+driven by an agent.
+
+### Quick start
+
+```bash
+# from a checkout (no build needed)
+npm install
+npm run cli -- decode capture.chproto          # decode a native-protocol capture
+
+# or build the standalone binary and run it
+npm run cli:build
+node dist/cli/index.js decode result.native --format native
+
+# pipe bytes in from anywhere
+clickhouse-client -q "SELECT 1 FORMAT Native" | node dist/cli/index.js decode -f native -
+```
+
+Output is a single JSON document on **stdout**; diagnostics and a JSON error
+envelope go to **stderr**. Exit codes: `0` success, `2` usage error, `1` I/O or
+decode error.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `chfx decode [file]` | Decode a `.chproto`, Native, or RowBinary dump to JSON. Reads stdin when no file (or `-`) is given. |
+| `chfx --help` / `chfx <cmd> --help` | Human-readable help. |
+| `chfx --version` | Print the version. |
+
+### `decode` options
+
+| Option | Description |
+|--------|-------------|
+| `--format`, `-f` `<chproto\|native\|rowbinary>` | Force the decoder. Omitted → autodetect: `.chproto` by magic header, raw bodies by trial decode (ambiguous input errors and asks for `--format`). |
+| `--protocol-version <N>` | Native `client_protocol_version` used to interpret a raw Native body (default `0`). |
+| `--no-node-bytes` | Omit each node's inline raw bytes (consumers slice `bytesHex` by range instead). Smaller output. |
+| `--compact` | Emit single-line JSON instead of pretty-printed. |
+
+### Output shape
+
+```jsonc
+{
+  "chfx":    { "tool": "chfx", "version": "...", "schemaVersion": 1, "command": "decode" },
+  "source":  { "kind": "file", "path": "...", "byteLength": 2417 },
+  "format":  "NativeProtocol",          // | Native | RowBinaryWithNamesAndTypes
+  "formatDetected": true,                // false when forced via --format
+  "protocolVersion": 54482,              // negotiated (chproto) / requested (native) / null (rowbinary)
+  "nodeBytes": true,                     // false when --no-node-bytes was passed
+  "protocol": { "negotiatedVersion": 54482, "c2sLength": 191, "dumpMeta": { ... } },
+  "bytesHex": "0011436c...",            // the whole decoded buffer, encoded once
+  "data":    { /* ParsedData: header, rows|blocks, trailingNodes, metadata */ }
+}
+```
+
+Every node has a `byteRange` of `{start, end}` byte offsets into `bytesHex` (two
+hex chars per byte; `start` inclusive, `end` exclusive). By default each node
+**also carries its own raw bytes inline** as a `bytes` hex string, so a consumer
+can read the bytes behind any value without slicing `bytesHex` itself — pass
+`--no-node-bytes` to drop them for smaller output.
+
+> Decoded values are JSON-safe: 64-bit and larger integers become decimal
+> strings, and raw byte blobs become hex.
 
 ## Desktop App
 

@@ -36,6 +36,10 @@ npm run test            # Run integration tests (uses testcontainers)
 npm run lint            # ESLint check
 npm run test:e2e        # Build Electron + run Playwright e2e tests
 
+# CLI (chfx) — decode wire-format dumps to structured JSON
+npm run cli -- decode capture.chproto   # run from source via tsx
+npm run cli:build                        # bundle the publishable binary → dist/cli/index.js
+
 # Electron desktop app
 npm run electron:dev    # Dev mode with hot reload
 npm run electron:build  # Package desktop installer for current platform
@@ -78,6 +82,14 @@ src/
 │       └── request-params.ts  # Shared request parameter builder
 ├── store/
 │   └── store.ts          # Zustand store (query, parsed data, UI state)
+├── cli/                  # chfx CLI (Node, bundled via esbuild; reuses src/core decoders)
+│   ├── index.ts          # Entry: command dispatch, --help/--version, JSON error envelope
+│   ├── commands/decode.ts# `decode` — decodeBuffer() (chproto/Native/RowBinary, autodetect) + envelope
+│   ├── args.ts           # Dependency-free arg parser
+│   ├── output.ts         # CliError, JSON-safe serializer (bigint→string, bytes→hex)
+│   ├── registry.ts       # Command metadata for --help
+│   ├── version.ts        # Build-injected version (esbuild define)
+│   └── cli.test.ts       # Vitest unit + tsx e2e tests (uses fixtures/protocol/*.chproto)
 └── styles/               # CSS files
 electron/
 ├── main.ts               # Electron main process (window, IPC handlers)
