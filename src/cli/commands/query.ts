@@ -9,9 +9,15 @@ import {
 
 import { ClickHouseFormat } from '../../core/types/formats';
 import { appendClickHouseRequestParams } from '../../core/clickhouse/request-params';
-import { parseArgs, stringOption, boolOption } from '../args';
+import { parseArgs, stringOption, boolOption, rejectUnknownArgs } from '../args';
 import { CliError, type JsonOutput } from '../output';
-import { resolveCaptureOptions, resolveHttpConnection, CONNECTION_VALUE_FLAGS, CONNECTION_MULTI_FLAGS } from '../connection';
+import {
+  resolveCaptureOptions,
+  resolveHttpConnection,
+  CONNECTION_VALUE_FLAGS,
+  CONNECTION_MULTI_FLAGS,
+  CONNECTION_ALLOWED,
+} from '../connection';
 import { decodeBuffer, decodeCaptureStreams, buildDecodeEnvelope, type DecodeResult, type FormatName } from './decode';
 
 export interface QueryDeps {
@@ -56,6 +62,7 @@ export async function queryCommand(rest: string[], deps: Partial<QueryDeps> = {}
     valueFlags: [...CONNECTION_VALUE_FLAGS, 'save', 'protocol', 'format', 'protocol-version'],
     multiFlags: CONNECTION_MULTI_FLAGS,
   });
+  rejectUnknownArgs(args, [...CONNECTION_ALLOWED, 'save', 'protocol', 'format', 'protocol-version', 'compact', 'no-node-bytes']);
   const compact = boolOption(args, 'compact');
   const includeNodeBytes = !boolOption(args, 'no-node-bytes');
 

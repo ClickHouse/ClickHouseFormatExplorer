@@ -10,7 +10,7 @@ import { DEFAULT_NATIVE_PROTOCOL_VERSION } from '../../core/types/native-protoco
 
 import { CliError, type JsonOutput } from '../output';
 import { CHFX_VERSION, CLI_SCHEMA_VERSION } from '../version';
-import { parseArgs, stringOption, boolOption } from '../args';
+import { parseArgs, stringOption, boolOption, rejectUnknownArgs } from '../args';
 
 export const FORMAT_NAMES = ['chproto', 'native', 'rowbinary'] as const;
 export type FormatName = (typeof FORMAT_NAMES)[number];
@@ -220,6 +220,7 @@ export async function decodeCommand(rest: string[]): Promise<JsonOutput> {
     valueFlags: ['format', 'protocol-version'],
     aliases: { f: 'format' },
   });
+  rejectUnknownArgs(args, ['format', 'protocol-version', 'compact', 'no-node-bytes'], 1);
 
   const format = stringOption(args, 'format') as FormatName | undefined;
   if (format && !FORMAT_NAMES.includes(format)) {

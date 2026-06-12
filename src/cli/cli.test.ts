@@ -385,6 +385,14 @@ describe('decode — edge & error paths', () => {
     // A 0x00 lead byte parses as a 0-column RowBinary header AND as a Native block.
     expect(() => decodeBuffer(Uint8Array.from([0x00, 0x02]))).toThrow(/ambiguous/);
   });
+
+  it('rejects an unknown flag instead of silently ignoring it', async () => {
+    await expect(decodeCommand(['file.bin', '--frmat', 'native'])).rejects.toThrow(/unknown option: --frmat/);
+  });
+
+  it('rejects an extra positional argument', async () => {
+    await expect(decodeCommand(['a.bin', 'b.bin'])).rejects.toThrow(/unexpected argument: b\.bin/);
+  });
 });
 
 describe('query — http request construction (spied fetch)', () => {
@@ -467,8 +475,20 @@ describe('query / capture — failure modes', () => {
       .rejects.toThrow(/unknown --format/);
   });
 
+  it('rejects a typo\'d/unknown flag (e.g. --protcol) instead of ignoring it', async () => {
+    await expect(queryCommand(['--query', 'x', '--protcol', 'http'])).rejects.toThrow(/unknown option: --protcol/);
+  });
+
+  it('rejects an unexpected positional argument', async () => {
+    await expect(queryCommand(['--query', 'x', 'extra'])).rejects.toThrow(/unexpected argument: extra/);
+  });
+
   it('wraps a capture-command failure as an io error', async () => {
     await expect(captureCommand(['--query', 'x'], throwingCapture)).rejects.toThrow(/capture failed/);
+  });
+
+  it('capture rejects an unknown flag', async () => {
+    await expect(captureCommand(['--query', 'x', '--nope'])).rejects.toThrow(/unknown option: --nope/);
   });
 });
 

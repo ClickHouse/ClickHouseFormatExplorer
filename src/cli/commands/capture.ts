@@ -7,10 +7,10 @@ import {
   type CaptureQueryOptions,
 } from '../../../scripts/native-proxy.mjs';
 
-import { parseArgs, stringOption, boolOption } from '../args';
+import { parseArgs, stringOption, boolOption, rejectUnknownArgs } from '../args';
 import { CliError, type CommandOutput } from '../output';
 import { CHFX_VERSION, CLI_SCHEMA_VERSION } from '../version';
-import { resolveCaptureOptions, CONNECTION_VALUE_FLAGS, CONNECTION_MULTI_FLAGS } from '../connection';
+import { resolveCaptureOptions, CONNECTION_VALUE_FLAGS, CONNECTION_MULTI_FLAGS, CONNECTION_ALLOWED } from '../connection';
 
 export interface CaptureDeps {
   captureQuery: (opts: CaptureQueryOptions) => Promise<Capture>;
@@ -30,6 +30,7 @@ export async function captureCommand(
     multiFlags: CONNECTION_MULTI_FLAGS,
     aliases: { o: 'out' },
   });
+  rejectUnknownArgs(args, [...CONNECTION_ALLOWED, 'out', 'compact']);
   const compact = boolOption(args, 'compact');
   const out = stringOption(args, 'out');
   const captureOpts = resolveCaptureOptions(args);

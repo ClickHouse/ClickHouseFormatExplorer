@@ -21,6 +21,8 @@ const EXPERIMENTAL_SETTINGS: Record<string, string> = {
 /** Flags shared by `query` and `capture` for arg-parser specs. */
 export const CONNECTION_VALUE_FLAGS = ['query', 'host', 'port', 'user', 'password', 'database', 'client'];
 export const CONNECTION_MULTI_FLAGS = ['setting'];
+/** Every connection-related option name (for unknown-arg rejection). */
+export const CONNECTION_ALLOWED = [...CONNECTION_VALUE_FLAGS, ...CONNECTION_MULTI_FLAGS, 'no-experimental-settings'];
 
 function parseSettings(pairs: string[]): Record<string, string> {
   const out: Record<string, string> = {};

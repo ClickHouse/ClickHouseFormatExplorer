@@ -78,7 +78,11 @@ export function parseArgs(argv: string[], spec: ArgSpec = {}): ParsedArgs {
   return { positionals, options };
 }
 
-/** Read an option as a string, or undefined if absent. Errors if it's a bare boolean flag or repeated. */
+/**
+ * Read an option as a single string, or undefined if absent. Errors if it was
+ * given without a value (a bare boolean flag) or accumulated as an array
+ * (declared in `multiFlags` and given more than once).
+ */
 export function stringOption(args: ParsedArgs, name: string): string | undefined {
   const v = args.options[name];
   if (v === undefined) return undefined;
@@ -93,6 +97,25 @@ export function stringOption(args: ParsedArgs, name: string): string | undefined
 
 export function boolOption(args: ParsedArgs, name: string): boolean {
   return args.options[name] === true || args.options[name] === 'true';
+}
+
+/**
+ * Reject anything the command doesn't recognize: an option whose (canonical)
+ * name isn't in `allowed`, or positionals beyond `maxPositionals`. Keeps the
+ * permissive parser generic while letting each command fail fast on typos like
+ * `--protcol` instead of silently ignoring them. `allowed` lists canonical
+ * names (aliases are already resolved by parseArgs).
+ */
+export function rejectUnknownArgs(args: ParsedArgs, allowed: string[], maxPositionals = 0): void {
+  const known = new Set(allowed);
+  for (const name of Object.keys(args.options)) {
+    if (!known.has(name)) {
+      throw new CliError('usage', `unknown option: --${name}`);
+    }
+  }
+  if (args.positionals.length > maxPositionals) {
+    throw new CliError('usage', `unexpected argument: ${args.positionals[maxPositionals]}`);
+  }
 }
 
 /** Read a repeatable option as an array (empty if absent). */
