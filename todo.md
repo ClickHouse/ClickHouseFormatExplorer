@@ -22,11 +22,13 @@ Spec for items 1, 2, 4, 5: [docs/cli-spec.md](docs/cli-spec.md)
      clickhouse-client; `--protocol http` POSTs and decodes the `--format`
      (native | RowBinaryWithNamesAndTypes) body. `--save` keeps the dump (tcp).
      `chfx capture` writes a dump (file or raw stdout); `npm run capture` aliases it.
-5. **Use with external clients, in the CLI** — `chfx proxy`: standalone capture
-   proxy any native client connects through. Single-shot by default; persistent
-   and live-decode via flags. Plaintext/uncompressed only. _(Not yet built — the
-   `query`/`capture` above are us being the client; the proxy captures other
-   clients.)_
+5. **Use with external clients, in the CLI** — _implemented (branch `chfx-proxy`)._
+   `chfx proxy --listen <[host:]port> --target <host:port>`: a capturing TCP proxy
+   any native client connects through (the proxy never spawns one). Single-shot by
+   default (`--out <file>`, `--decode`, or raw dump to stdout, then exit);
+   `--persistent` serves many connections (`--save-dir` one dump per connection,
+   `--decode` streams JSON per connection) until Ctrl-C. Plaintext/uncompressed
+   only. Backed by `startCaptureProxy` in `scripts/native-proxy.mjs`.
 
 Cross-cutting: thorough CLI tests/fixtures; README quick-start + full options
 reference; remote auth/TLS flags. _(Native own-TCP-client to drop the

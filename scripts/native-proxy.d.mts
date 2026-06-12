@@ -36,6 +36,23 @@ export function startProxy(opts: {
   listenHost?: string;
 }): Promise<{ port: number; done: Promise<Segment[]>; close: () => void }>;
 
+export interface StartCaptureProxyOptions {
+  targetHost: string;
+  targetPort: number;
+  listenHost?: string;
+  listenPort?: number;
+  once?: boolean;
+  onCapture?: (capture: Capture) => void;
+  onError?: (err: Error) => void;
+}
+
+export function startCaptureProxy(opts: StartCaptureProxyOptions): Promise<{
+  host: string;
+  port: number;
+  done: Promise<void>;
+  close: () => void;
+}>;
+
 export function splitStreams(segments: Segment[]): { c2s: Buffer; s2c: Buffer };
 export function captureQuery(opts: CaptureQueryOptions): Promise<Capture>;
 export function encodeDump(capture: Capture): Buffer;

@@ -6,6 +6,7 @@ import { COMMANDS, findCommand, type CommandDoc } from './registry';
 import { decodeCommand } from './commands/decode';
 import { queryCommand } from './commands/query';
 import { captureCommand } from './commands/capture';
+import { proxyCommand } from './commands/proxy';
 
 function generalHelp(): string {
   const lines = [
@@ -70,15 +71,19 @@ async function run(argv: string[]): Promise<number> {
     case 'capture':
       out = await captureCommand(rest);
       break;
+    case 'proxy':
+      out = await proxyCommand(rest);
+      break;
     default:
       throw new CliError('usage', `unknown command: ${command} (try: chfx --help)`);
   }
 
   if (out.stdout === 'json') {
     writeStdout(stringify(out.data, out.compact));
-  } else {
+  } else if (out.stdout === 'raw') {
     process.stdout.write(out.bytes);
   }
+  // 'none': the command already wrote its own output (e.g. the streaming proxy).
   return 0;
 }
 

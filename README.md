@@ -76,6 +76,7 @@ decode error.
 |---------|-------------|
 | `chfx query --query "<sql>"` | Run a query **and decode it** in one step (no file). `--protocol tcp` (default) captures the native packet stream via `clickhouse-client`; `--protocol http` POSTs to ClickHouse HTTP and decodes the `--format` body. `--save <f>` keeps the `.chproto` dump (tcp). |
 | `chfx capture --query "<sql>"` | Capture a query to a `.chproto` dump only (native protocol). Writes `--out <f>`, or streams raw bytes to stdout (so `chfx capture … \| chfx decode` works). `npm run capture` is an alias. |
+| `chfx proxy --listen <port> --target <host:port>` | Listen as a capturing TCP proxy that **any** native client connects through (clickhouse-client, Go/JDBC/Python drivers, …). Single-shot by default; `--persistent` serves many connections. See below. |
 | `chfx decode [file]` | Decode a `.chproto`, Native, or RowBinary dump to JSON. Reads stdin when no file (or `-`) is given. |
 | `chfx --help` / `chfx <cmd> --help` | Human-readable help. |
 | `chfx --version` | Print the version. |
@@ -101,6 +102,51 @@ decode error.
 | `--no-experimental-settings` | Don't send the Variant/Dynamic/JSON/QBit enabling settings (sent by default). |
 | `--client <path>` | Path to `clickhouse-client` (tcp only). Env: `CLICKHOUSE_CLIENT`. |
 | `--out <file>` (`capture`) | Where to write the `.chproto` dump. |
+
+### `proxy` — capture any native client
+
+Unlike `query`/`capture` (which drive `clickhouse-client` for you), `proxy`
+just **listens**: it forwards every connection to `--target` and tees the native
+packet stream into a capture. Point any native client at the listen address —
+the proxy never spawns one itself. Plaintext/uncompressed connections only (TLS
+and compressed streams are unsupported, the same constraint as the other native
+paths).
+
+```bash
+# Single-shot: capture the next connection, write a dump, exit.
+chfx proxy --listen 9100 --target 127.0.0.1:9000 --out cap.chproto
+clickhouse-client --port 9100 --query "SELECT 1"   # in another shell
+
+# Single-shot, decoded straight to JSON (no file):
+chfx proxy --listen 9100 --target 127.0.0.1:9000 --decode
+
+# Persistent: serve many connections, one dump per connection, until Ctrl-C.
+chfx proxy --listen 9100 --target 127.0.0.1:9000 --persistent --save-dir ./caps
+```
+
+| Option | Description |
+|--------|-------------|
+| `--listen <[host:]port>` | Address to listen on (host defaults to `127.0.0.1`). Required. |
+| `--target <host:port>` | Upstream ClickHouse native endpoint (default port `9000`). Required. |
+| `--out <file>` (`-o`) | **Single-shot** — write the `.chproto` dump here; omit (and no `--decode`) to stream the raw dump to stdout. |
+| `--decode` | Decode each capture to a JSON envelope on stdout (instead of writing/streaming the raw dump). |
+| `--save-dir <dir>` | **Persistent** — write one `conn-NNNN.chproto` per connection into this directory. |
+| `--persistent` / `--once` | Serve until Ctrl-C, or stop after the first connection (default `--once`). |
+| `--no-node-bytes` / `--compact` | Same output controls as `decode` (apply when `--decode` is set). |
+
+Diagnostics (the listen address, per-connection notices) go to **stderr**, so
+stdout stays a clean dump or JSON stream.
+
+Notes:
+- A capture completes when the **client closes its connection** (`clickhouse-client`
+  does after each `--query`). For long-lived/pooled driver connections that stay
+  open, press **Ctrl-C** — single-shot finalizes the partial capture and exits;
+  persistent stops and flushes any still-open connection.
+- In `--persistent --save-dir`, files are named `conn-0001.chproto`, `conn-0002…`
+  per run; the counter resets each run, so re-running against the same directory
+  **overwrites** earlier files. Use a fresh `--save-dir` per run to keep history.
+- For `--persistent --decode`, add `--compact` to emit one JSON document per line
+  (newline-delimited JSON), which is what stream consumers expect.
 
 ### `decode` options
 

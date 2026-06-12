@@ -133,6 +133,146 @@ export function startProxy({ targetHost, targetPort, listenHost = '127.0.0.1' })
 }
 
 /**
+ * Start a capturing proxy that forwards every accepted connection to
+ * (targetHost, targetPort) and invokes onCapture(capture) once that connection
+ * closes. Unlike startProxy (single-shot, ephemeral port, resolves with the raw
+ * segment log), this binds a caller-chosen address and can serve many
+ * connections — it backs `chfx proxy`, where an external native client connects
+ * through it. In `once` mode it stops itself after the first completed
+ * connection; otherwise it runs until close() is called. close() (and `once`'s
+ * self-stop) flush a partial capture for any connection still open, so a client
+ * that holds its connection alive (pooled drivers, idle sessions) is captured
+ * up to the point of shutdown rather than dropped.
+ *
+ * @param {object} opts
+ * @param {string} opts.targetHost
+ * @param {number} opts.targetPort
+ * @param {string} [opts.listenHost]
+ * @param {number} [opts.listenPort]   default 0 (ephemeral)
+ * @param {boolean} [opts.once]        stop after the first completed connection
+ * @param {(capture: Capture) => void} [opts.onCapture]
+ * @param {(err: Error) => void} [opts.onError]
+ * @returns {Promise<{ host: string, port: number, done: Promise<void>, close: () => void }>}
+ */
+export function startCaptureProxy({
+  targetHost,
+  targetPort,
+  listenHost = '127.0.0.1',
+  listenPort = 0,
+  once = false,
+  onCapture,
+  onError,
+}) {
+  return new Promise((resolve, reject) => {
+    /** @type {() => void} */
+    let resolveDone;
+    const done = new Promise((res) => { resolveDone = res; });
+    let settled = false;
+    let connectionCount = 0;
+    /** @type {Set<import('node:net').Socket>} */
+    const sockets = new Set();
+    // report() callbacks for connections that haven't emitted a capture yet, so
+    // close() can flush a partial capture (e.g. Ctrl-C while a connection is
+    // still open, or a long-lived pooled client) instead of dropping it.
+    /** @type {Set<() => void>} */
+    const reporters = new Set();
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      try { server.close(); } catch { /* ignore */ }
+      // Flush whatever each still-open connection captured before tearing down.
+      for (const report of [...reporters]) report();
+      for (const s of sockets) s.destroy();
+      resolveDone();
+    };
+
+    const server = net.createServer((client) => {
+      const id = ++connectionCount;
+      sockets.add(client);
+      const upstream = net.connect(targetPort, targetHost);
+      sockets.add(upstream);
+
+      /** @type {Segment[]} */
+      const segments = [];
+      let openEnds = 2;
+      let reported = false;
+
+      const report = () => {
+        if (reported) return;
+        reported = true;
+        reporters.delete(report);
+        const { c2s, s2c } = splitStreams(segments);
+        /** @type {Capture} */
+        const capture = {
+          c2s,
+          s2c,
+          segments,
+          meta: { source: 'proxy', target: `${targetHost}:${targetPort}`, connection: id },
+        };
+        try {
+          onCapture?.(capture);
+        } catch (err) {
+          onError?.(/** @type {Error} */ (err));
+        }
+        if (once) finish();
+      };
+      reporters.add(report);
+
+      const closeOne = () => {
+        openEnds -= 1;
+        if (openEnds === 0) report();
+      };
+
+      // Forward with backpressure so a slow consumer can't make us buffer the
+      // whole stream in the socket layer (we already retain it in `segments`).
+      client.on('data', (chunk) => {
+        segments.push({ dir: DIR_C2S, data: Buffer.from(chunk) });
+        if (upstream.write(chunk) === false) client.pause();
+      });
+      upstream.on('drain', () => client.resume());
+      upstream.on('data', (chunk) => {
+        segments.push({ dir: DIR_S2C, data: Buffer.from(chunk) });
+        if (client.write(chunk) === false) upstream.pause();
+      });
+      client.on('drain', () => upstream.resume());
+      client.on('end', () => upstream.end());
+      upstream.on('end', () => client.end());
+      client.on('close', () => { sockets.delete(client); closeOne(); });
+      upstream.on('close', () => { sockets.delete(upstream); closeOne(); });
+
+      const fail = (/** @type {Error} */ err) => {
+        onError?.(err);
+        // Tear both ends down; their 'close' events drive report()/closeOne(),
+        // so a failed upstream connect can't leave `once` mode hanging.
+        client.destroy();
+        upstream.destroy();
+      };
+      client.on('error', fail);
+      upstream.on('error', fail);
+    });
+
+    // Until we're listening, an error is a startup/bind failure → reject the
+    // returned promise. Once listening (promise already resolved), reject is a
+    // no-op, so route later server errors to onError instead of dropping them.
+    let listening = false;
+    server.on('error', (err) => {
+      if (!listening) reject(err);
+      else onError?.(/** @type {Error} */ (err));
+    });
+    server.listen(listenPort, listenHost, () => {
+      const addr = server.address();
+      if (addr === null || typeof addr === 'string') {
+        reject(new Error('proxy failed to bind a port'));
+        return;
+      }
+      listening = true;
+      resolve({ host: listenHost, port: addr.port, done, close: finish });
+    });
+  });
+}
+
+/**
  * Split an ordered segment log into the two concatenated per-direction streams.
  * @param {Segment[]} segments
  */

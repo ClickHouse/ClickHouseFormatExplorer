@@ -64,20 +64,27 @@ writes the dump; omitted, it streams the raw dump bytes to stdout so
 **`npm run capture` is a thin alias** to `chfx capture` (the standalone
 `scripts/capture-native.mjs` was folded in and removed).
 
-#### `chfx proxy` (item 5 — standalone capture proxy)
+#### `chfx proxy` (item 5 — standalone capture proxy, implemented)
 A listener that forwards to a target server and captures the native TCP stream.
 **Any** native client (clickhouse-client, Go/JDBC/Python drivers, …) connects
 through it — the proxy does not spawn the client itself.
 - Configurable lifecycle:
   - **Default: single-shot** — accept one connection, capture, write a
-    `.chproto` (and decode if asked), then exit.
-  - Flags opt into **persistent** mode (long-running, one `.chproto` per
-    connection to an output dir) and **live decode** (`--decode` streams decoded
-    JSON per connection to stdout).
-- Flags: `--listen`, `--target host:port`, `--out`/`--save-dir`, `--decode`,
-  `--persistent`/`--once`, plus remote `--user/--password`/TLS where applicable.
+    `.chproto` (`--out`), decode to JSON (`--decode`), or stream the raw dump to
+    stdout, then exit.
+  - `--persistent` opts into long-running mode: one `.chproto` per connection to
+    `--save-dir`, and/or **live decode** (`--decode` streams a decoded JSON doc
+    per connection to stdout). Stops on Ctrl-C.
+- Flags: `--listen [host:]port`, `--target host:port`, `--out`/`--save-dir`,
+  `--decode`, `--persistent`/`--once`, `--no-node-bytes`/`--compact`.
+- No `--user/--password`: the proxy is transparent, so the client authenticates
+  end-to-end against the target through the forwarded handshake.
 - **Plaintext/uncompressed only** (same constraint as today). TLS/compressed
-  streams are unsupported — error clearly and document it.
+  streams are unsupported — out of scope (clickhouse-client disables compression
+  on localhost, which is the intended setup).
+- Backed by `startCaptureProxy` in `scripts/native-proxy.mjs` (fixed listen port,
+  many connections), distinct from `startProxy` (one-shot, ephemeral) used by
+  `query`/`capture`.
 
 #### `--help`
 Human-readable help (`chfx --help`, `chfx <command> --help`). A standalone
