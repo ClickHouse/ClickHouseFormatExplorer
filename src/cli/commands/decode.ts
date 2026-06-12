@@ -8,7 +8,7 @@ import { createDecoder, ProtocolDecoder } from '../../core/decoder';
 import { parseChprotoDump } from '../../core/decoder/protocol-dump';
 import { DEFAULT_NATIVE_PROTOCOL_VERSION } from '../../core/types/native-protocol';
 
-import { CliError } from '../output';
+import { CliError, type JsonOutput } from '../output';
 import { CHFX_VERSION, CLI_SCHEMA_VERSION } from '../version';
 import { parseArgs, stringOption, boolOption } from '../args';
 
@@ -17,7 +17,7 @@ export type FormatName = (typeof FORMAT_NAMES)[number];
 
 const CHPROTO_MAGIC = 'CHPROTO1';
 
-interface DecodeCore {
+export interface DecodeCore {
   format: ClickHouseFormat;
   /** Version negotiated (chproto) or requested (native); null for RowBinary. */
   protocolVersion: number | null;
@@ -40,8 +40,16 @@ function isChproto(bytes: Uint8Array): boolean {
   return true;
 }
 
-function decodeChproto(bytes: Uint8Array): DecodeCore {
-  const { c2s, s2c, meta } = parseChprotoDump(bytes);
+/**
+ * Decode the two per-direction streams of a native-protocol capture. Shared by
+ * `decode` (from a .chproto file) and `query`/`capture` (from a live exchange).
+ * The byteRanges index into the combined c2s+s2c buffer returned as outputBytes.
+ */
+export function decodeCaptureStreams(
+  c2s: Uint8Array,
+  s2c: Uint8Array,
+  meta?: Record<string, unknown>,
+): DecodeCore {
   const combined = new Uint8Array(c2s.length + s2c.length);
   combined.set(c2s, 0);
   combined.set(s2c, c2s.length);
@@ -58,6 +66,11 @@ function decodeChproto(bytes: Uint8Array): DecodeCore {
       dumpMeta: meta ?? {},
     },
   };
+}
+
+function decodeChproto(bytes: Uint8Array): DecodeCore {
+  const { c2s, s2c, meta } = parseChprotoDump(bytes);
+  return decodeCaptureStreams(c2s, s2c, meta);
 }
 
 function decodeNative(bytes: Uint8Array, protocolVersion: number): DecodeCore {
@@ -146,6 +159,35 @@ function attachNodeBytes(value: unknown, buffer: Uint8Array): unknown {
   return value;
 }
 
+/**
+ * Build the JSON envelope shared by `decode` and `query`: tool metadata, the
+ * format/version, the whole buffer as `bytesHex`, and the ParsedData tree (with
+ * per-node inline bytes unless disabled).
+ */
+export function buildDecodeEnvelope(
+  result: DecodeResult,
+  source: Record<string, unknown>,
+  opts: { command: string; includeNodeBytes: boolean },
+): Record<string, unknown> {
+  return {
+    chfx: { tool: 'chfx', version: CHFX_VERSION, schemaVersion: CLI_SCHEMA_VERSION, command: opts.command },
+    source,
+    format: result.format,
+    formatDetected: result.formatDetected,
+    protocolVersion: result.protocolVersion,
+    nodeBytes: opts.includeNodeBytes,
+    ...(result.protocol ? { protocol: result.protocol } : {}),
+    conventions: {
+      byteRange:
+        'Each node has byteRange {start, end} into bytesHex (2 hex chars per byte; start inclusive, end exclusive).',
+      bytes:
+        'When nodeBytes is true, each node also carries its own raw bytes inline as "bytes" (hex); pass --no-node-bytes to omit and slice bytesHex by range instead.',
+    },
+    bytesHex: Buffer.from(result.outputBytes).toString('hex'),
+    data: opts.includeNodeBytes ? attachNodeBytes(result.parsed, result.outputBytes) : result.parsed,
+  };
+}
+
 async function readInput(path: string | undefined): Promise<{ bytes: Uint8Array; source: Record<string, unknown> }> {
   if (path && path !== '-') {
     try {
@@ -173,7 +215,7 @@ function parseProtocolVersion(raw: string | undefined): number | undefined {
   return n;
 }
 
-export async function decodeCommand(rest: string[]): Promise<{ data: unknown; compact: boolean }> {
+export async function decodeCommand(rest: string[]): Promise<JsonOutput> {
   const args = parseArgs(rest, {
     valueFlags: ['format', 'protocol-version'],
     aliases: { f: 'format' },
@@ -193,24 +235,6 @@ export async function decodeCommand(rest: string[]): Promise<{ data: unknown; co
   }
 
   const result = decodeBuffer(bytes, { format, protocolVersion });
-
-  const data = {
-    chfx: { tool: 'chfx', version: CHFX_VERSION, schemaVersion: CLI_SCHEMA_VERSION, command: 'decode' },
-    source,
-    format: result.format,
-    formatDetected: result.formatDetected,
-    protocolVersion: result.protocolVersion,
-    nodeBytes: includeNodeBytes,
-    ...(result.protocol ? { protocol: result.protocol } : {}),
-    conventions: {
-      byteRange:
-        'Each node has byteRange {start, end} into bytesHex (2 hex chars per byte; start inclusive, end exclusive).',
-      bytes:
-        'When nodeBytes is true, each node also carries its own raw bytes inline as "bytes" (hex); pass --no-node-bytes to omit and slice bytesHex by range instead.',
-    },
-    bytesHex: Buffer.from(result.outputBytes).toString('hex'),
-    data: includeNodeBytes ? attachNodeBytes(result.parsed, result.outputBytes) : result.parsed,
-  };
-
-  return { data, compact };
+  const data = buildDecodeEnvelope(result, source, { command: 'decode', includeNodeBytes });
+  return { stdout: 'json', data, compact };
 }

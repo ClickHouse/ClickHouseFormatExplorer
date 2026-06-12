@@ -25,6 +25,18 @@ export class CliError extends Error {
   }
 }
 
+/** A command either emits a JSON document or raw bytes on stdout. */
+export interface JsonOutput {
+  stdout: 'json';
+  data: unknown;
+  compact: boolean;
+}
+export interface RawOutput {
+  stdout: 'raw';
+  bytes: Uint8Array;
+}
+export type CommandOutput = JsonOutput | RawOutput;
+
 /**
  * JSON.stringify replacer that makes decoded values safe to serialize:
  * bigint → decimal string, byte arrays → hex, Map/Set → plain structures.

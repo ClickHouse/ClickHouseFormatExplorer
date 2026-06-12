@@ -1,12 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { decodeBuffer, decodeCommand } from './commands/decode';
-import { parseArgs, stringOption, boolOption } from './args';
+import { queryCommand } from './commands/query';
+import { captureCommand } from './commands/capture';
+import { resolveCaptureOptions } from './connection';
+import { parseArgs, stringOption, boolOption, arrayOption } from './args';
 import { stringify, CliError } from './output';
 import { ClickHouseFormat } from '../core/types/formats';
+import { parseChprotoDump } from '../core/decoder/protocol-dump';
 
 const FIXTURE_DIR = fileURLToPath(new URL('../core/decoder/fixtures/protocol/', import.meta.url));
 const CLI_ENTRY = fileURLToPath(new URL('./index.ts', import.meta.url));
@@ -184,6 +190,137 @@ describe('per-node inline bytes', () => {
     const env = data as Envelope;
     expect(env.nodeBytes).toBe(false);
     expect(anyBytesField(env.data)).toBe(false);
+  });
+});
+
+describe('parseArgs — repeatable flags', () => {
+  it('accumulates multiFlags into an array', () => {
+    const args = parseArgs(['--setting', 'a=1', '--setting', 'b=2'], { multiFlags: ['setting'] });
+    expect(arrayOption(args, 'setting')).toEqual(['a=1', 'b=2']);
+  });
+});
+
+describe('resolveCaptureOptions', () => {
+  it('requires --query', () => {
+    expect(() => resolveCaptureOptions(parseArgs([]))).toThrow(CliError);
+  });
+
+  it('takes flags over env and parses settings, dropping experimental when asked', () => {
+    const args = parseArgs(
+      ['--query', 'SELECT 1', '--host', 'h1', '--port', '9001', '--setting', 'max_threads=2', '--no-experimental-settings'],
+      { valueFlags: ['query', 'host', 'port'], multiFlags: ['setting'] },
+    );
+    const opts = resolveCaptureOptions(args);
+    expect(opts).toMatchObject({ query: 'SELECT 1', host: 'h1', port: 9001 });
+    expect(opts.settings).toEqual({ max_threads: '2' });
+  });
+
+  it('sends experimental settings by default', () => {
+    const opts = resolveCaptureOptions(parseArgs(['--query', 'SELECT 1'], { valueFlags: ['query'] }));
+    expect(opts.settings).toHaveProperty('allow_experimental_json_type', '1');
+  });
+
+  it('rejects a non-numeric port', () => {
+    expect(() => resolveCaptureOptions(parseArgs(['--query', 'x', '--port', 'abc'], { valueFlags: ['query', 'port'] }))).toThrow(
+      CliError,
+    );
+  });
+});
+
+describe('query / capture (with injected capture)', () => {
+  // Build a fake capture from a real fixture so no server/clickhouse-client is needed.
+  function fakeCapture() {
+    const { c2s, s2c, meta } = parseChprotoDump(readFixture(fixtures[0]));
+    const cb = Buffer.from(c2s);
+    const sb = Buffer.from(s2c);
+    return {
+      c2s: cb,
+      s2c: sb,
+      segments: [
+        { dir: 0 as const, data: cb },
+        { dir: 1 as const, data: sb },
+      ],
+      meta: meta ?? {},
+    };
+  }
+  const deps = { captureQuery: async () => fakeCapture() };
+
+  it('query captures + decodes in one step', async () => {
+    const out = await queryCommand(['--query', 'SELECT 1'], deps);
+    expect(out.stdout).toBe('json');
+    const env = out.data as { chfx: { command: string }; source: { kind: string; query: string }; format: string; bytesHex: string };
+    expect(env.chfx.command).toBe('query');
+    expect(env.source).toMatchObject({ kind: 'query', query: 'SELECT 1' });
+    expect(env.format).toBe('NativeProtocol');
+    expect(env.bytesHex.length).toBeGreaterThan(0);
+  });
+
+  it('query --save writes a round-trippable .chproto dump', async () => {
+    const path = join(tmpdir(), 'chfx-query-save.chproto');
+    try {
+      await queryCommand(['--query', 'SELECT 1', '--save', path], deps);
+      const reparsed = parseChprotoDump(new Uint8Array(readFileSync(path)));
+      expect(reparsed.c2s.length).toBe(fakeCapture().c2s.length);
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
+
+  it('capture without --out streams a raw .chproto dump to stdout', async () => {
+    const out = await captureCommand(['--query', 'SELECT 1'], deps);
+    expect(out.stdout).toBe('raw');
+    if (out.stdout !== 'raw') throw new Error('expected raw');
+    const reparsed = parseChprotoDump(out.bytes);
+    expect(reparsed.c2s.length).toBe(fakeCapture().c2s.length);
+  });
+
+  it('capture --out writes a file and returns a JSON summary', async () => {
+    const path = join(tmpdir(), 'chfx-capture-out.chproto');
+    try {
+      const out = await captureCommand(['--query', 'SELECT 1', '--out', path], deps);
+      expect(out.stdout).toBe('json');
+      const data = (out as { data: { saved: string; bytes: number; segments: number } }).data;
+      expect(data.saved).toBe(path);
+      expect(data.bytes).toBeGreaterThan(0);
+      expect(data.segments).toBe(2);
+      expect(readFileSync(path).length).toBe(data.bytes);
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
+});
+
+describe('query --protocol http (injected fetch)', () => {
+  const fetchReturning = (body: Uint8Array | string, status = 200): typeof fetch =>
+    (async () => new Response(body, { status })) as typeof fetch;
+
+  it('decodes a Native body and records the http transport', async () => {
+    const out = await queryCommand(['--query', 'SELECT 1', '--protocol', 'http'], { fetch: fetchReturning(NATIVE_BODY) });
+    const env = out.data as { format: string; source: { protocol: string; httpFormat: string } };
+    expect(env.format).toBe('Native');
+    expect(env.source.protocol).toBe('http');
+    expect(env.source.httpFormat).toBe('Native');
+  });
+
+  it('decodes a RowBinaryWithNamesAndTypes body', async () => {
+    const out = await queryCommand(
+      ['--query', 'SELECT 1', '--protocol', 'http', '--format', 'RowBinaryWithNamesAndTypes'],
+      { fetch: fetchReturning(ROWBINARY_BODY) },
+    );
+    expect((out.data as { format: string }).format).toBe('RowBinaryWithNamesAndTypes');
+  });
+
+  it('surfaces a non-2xx HTTP response as an error', async () => {
+    await expect(
+      queryCommand(['--query', 'x', '--protocol', 'http'], { fetch: fetchReturning('Code: 60', 404) }),
+    ).rejects.toThrow(CliError);
+  });
+
+  it('rejects --format with tcp and --save with http', async () => {
+    await expect(queryCommand(['--query', 'x', '--format', 'native'], { captureQuery: async () => { throw new Error('unused'); } }))
+      .rejects.toThrow(/--format only applies/);
+    await expect(queryCommand(['--query', 'x', '--protocol', 'http', '--save', '/tmp/x'], { fetch: fetchReturning(NATIVE_BODY) }))
+      .rejects.toThrow(/--save only applies/);
   });
 });
 

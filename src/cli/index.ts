@@ -1,9 +1,11 @@
 import process from 'node:process';
 
-import { CliError, emitError, writeStdout, stringify } from './output';
+import { CliError, emitError, writeStdout, stringify, type CommandOutput } from './output';
 import { CHFX_VERSION } from './version';
 import { COMMANDS, findCommand, type CommandDoc } from './registry';
 import { decodeCommand } from './commands/decode';
+import { queryCommand } from './commands/query';
+import { captureCommand } from './commands/capture';
 
 function generalHelp(): string {
   const lines = [
@@ -57,16 +59,26 @@ async function run(argv: string[]): Promise<number> {
     return 0;
   }
 
-  let out: { data: unknown; compact: boolean };
+  let out: CommandOutput;
   switch (command) {
     case 'decode':
       out = await decodeCommand(rest);
+      break;
+    case 'query':
+      out = await queryCommand(rest);
+      break;
+    case 'capture':
+      out = await captureCommand(rest);
       break;
     default:
       throw new CliError('usage', `unknown command: ${command} (try: chfx --help)`);
   }
 
-  writeStdout(stringify(out.data, out.compact));
+  if (out.stdout === 'json') {
+    writeStdout(stringify(out.data, out.compact));
+  } else {
+    process.stdout.write(out.bytes);
+  }
   return 0;
 }
 

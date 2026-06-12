@@ -2,12 +2,14 @@ import { CliError } from './output';
 
 export interface ParsedArgs {
   positionals: string[];
-  options: Record<string, string | boolean>;
+  options: Record<string, string | boolean | string[]>;
 }
 
 export interface ArgSpec {
-  /** Option names (canonical) that consume the following token as a value. */
+  /** Option names (canonical) that consume the following token as a single value. */
   valueFlags?: string[];
+  /** Option names that consume a value and accumulate repeats into an array. */
+  multiFlags?: string[];
   /** Short/alternate name → canonical name. */
   aliases?: Record<string, string>;
 }
@@ -21,9 +23,19 @@ export interface ArgSpec {
  */
 export function parseArgs(argv: string[], spec: ArgSpec = {}): ParsedArgs {
   const valueFlags = new Set(spec.valueFlags ?? []);
+  const multiFlags = new Set(spec.multiFlags ?? []);
   const aliases = spec.aliases ?? {};
   const positionals: string[] = [];
-  const options: Record<string, string | boolean> = {};
+  const options: Record<string, string | boolean | string[]> = {};
+
+  const addValue = (name: string, value: string) => {
+    if (multiFlags.has(name)) {
+      const existing = options[name];
+      options[name] = Array.isArray(existing) ? [...existing, value] : [value];
+    } else {
+      options[name] = value;
+    }
+  };
 
   let i = 0;
   let positionalOnly = false;
@@ -52,12 +64,12 @@ export function parseArgs(argv: string[], spec: ArgSpec = {}): ParsedArgs {
     name = aliases[name] ?? name;
 
     if (inlineValue !== undefined) {
-      options[name] = inlineValue;
-    } else if (valueFlags.has(name)) {
+      addValue(name, inlineValue);
+    } else if (valueFlags.has(name) || multiFlags.has(name)) {
       if (i >= argv.length) {
         throw new CliError('usage', `option --${name} requires a value`);
       }
-      options[name] = argv[i++];
+      addValue(name, argv[i++]);
     } else {
       options[name] = true;
     }
@@ -66,16 +78,30 @@ export function parseArgs(argv: string[], spec: ArgSpec = {}): ParsedArgs {
   return { positionals, options };
 }
 
-/** Read an option as a string, or undefined if absent. Errors if it's a bare boolean flag. */
+/** Read an option as a string, or undefined if absent. Errors if it's a bare boolean flag or repeated. */
 export function stringOption(args: ParsedArgs, name: string): string | undefined {
   const v = args.options[name];
   if (v === undefined) return undefined;
   if (typeof v === 'boolean') {
     throw new CliError('usage', `option --${name} requires a value`);
   }
+  if (Array.isArray(v)) {
+    throw new CliError('usage', `option --${name} may only be given once`);
+  }
   return v;
 }
 
 export function boolOption(args: ParsedArgs, name: string): boolean {
   return args.options[name] === true || args.options[name] === 'true';
+}
+
+/** Read a repeatable option as an array (empty if absent). */
+export function arrayOption(args: ParsedArgs, name: string): string[] {
+  const v = args.options[name];
+  if (v === undefined) return [];
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'boolean') {
+    throw new CliError('usage', `option --${name} requires a value`);
+  }
+  return [v];
 }

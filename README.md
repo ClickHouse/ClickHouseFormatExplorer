@@ -44,24 +44,27 @@ The version is baked into the image — rebuild to change it.
 
 ## CLI (`chfx`)
 
-A command-line tool that decodes a binary wire-format dump into structured JSON —
-the same AST the web UI renders, plus the raw bytes — so it can be scripted or
-driven by an agent.
+A command-line tool that runs or decodes ClickHouse wire-format data and prints
+structured JSON — the same AST the web UI renders, plus the raw bytes — so it
+can be scripted or driven by an agent.
 
 ### Quick start
 
 ```bash
-# from a checkout (no build needed)
 npm install
-npm run cli -- decode capture.chproto          # decode a native-protocol capture
+npm link            # makes `chfx` available on your PATH (uses dist/cli/index.js)
+npm run cli:build   # build the binary `chfx` runs
 
-# or build the standalone binary and run it
-npm run cli:build
-node dist/cli/index.js decode result.native --format native
+# Run a query and see it decoded — one step, no intermediate file:
+chfx query --query "SELECT number AS n, [number] AS arr FROM numbers(3)"
 
-# pipe bytes in from anywhere
-clickhouse-client -q "SELECT 1 FORMAT Native" | node dist/cli/index.js decode -f native -
+# Decode a dump you already have (or pipe one in):
+chfx decode capture.chproto
+clickhouse-client -q "SELECT 1 FORMAT Native" | chfx decode -f native -
 ```
+
+> Prefer not to `npm link`? Use `npm run cli -- <args>` (runs from source via
+> tsx, no build) or `node dist/cli/index.js <args>` after `cli:build`.
 
 Output is a single JSON document on **stdout**; diagnostics and a JSON error
 envelope go to **stderr**. Exit codes: `0` success, `2` usage error, `1` I/O or
@@ -71,9 +74,33 @@ decode error.
 
 | Command | Description |
 |---------|-------------|
+| `chfx query --query "<sql>"` | Run a query **and decode it** in one step (no file). `--protocol tcp` (default) captures the native packet stream via `clickhouse-client`; `--protocol http` POSTs to ClickHouse HTTP and decodes the `--format` body. `--save <f>` keeps the `.chproto` dump (tcp). |
+| `chfx capture --query "<sql>"` | Capture a query to a `.chproto` dump only (native protocol). Writes `--out <f>`, or streams raw bytes to stdout (so `chfx capture … \| chfx decode` works). `npm run capture` is an alias. |
 | `chfx decode [file]` | Decode a `.chproto`, Native, or RowBinary dump to JSON. Reads stdin when no file (or `-`) is given. |
 | `chfx --help` / `chfx <cmd> --help` | Human-readable help. |
 | `chfx --version` | Print the version. |
+
+### `query` transport options
+
+| Option | Description |
+|--------|-------------|
+| `--protocol tcp\|http` | Transport. `tcp` (default) = native capture via `clickhouse-client`. `http` = HTTP request. |
+| `--format native\|RowBinaryWithNamesAndTypes` | **http only** — the body format to request and decode (default `native`). |
+| `--protocol-version <N>` | `client_protocol_version` for an http Native query (default `0`). |
+| `--save <file>` | **tcp only** — also write the raw `.chproto` capture. |
+
+### Connection options (`query` / `capture`)
+
+| Option | Description |
+|--------|-------------|
+| `--query <sql>` | SQL to run (required). |
+| `--host` / `--port` | Server host / port. Env: `CH_NATIVE_HOST`, `CH_NATIVE_PORT` (tcp) / `CH_HTTP_PORT` (http). Default `127.0.0.1`, port `9000` (tcp) / `8123` (http). |
+| `--user` / `--password` | Credentials. Env: `CH_USER` / `CH_PASSWORD`. |
+| `--database <db>` | Default database. Env: `CH_DATABASE`. |
+| `--setting k=v` | Per-query setting; repeatable. |
+| `--no-experimental-settings` | Don't send the Variant/Dynamic/JSON/QBit enabling settings (sent by default). |
+| `--client <path>` | Path to `clickhouse-client` (tcp only). Env: `CLICKHOUSE_CLIENT`. |
+| `--out <file>` (`capture`) | Where to write the `.chproto` dump. |
 
 ### `decode` options
 
@@ -88,8 +115,8 @@ decode error.
 
 ```jsonc
 {
-  "chfx":    { "tool": "chfx", "version": "...", "schemaVersion": 1, "command": "decode" },
-  "source":  { "kind": "file", "path": "...", "byteLength": 2417 },
+  "chfx":    { "tool": "chfx", "version": "...", "schemaVersion": 1, "command": "decode" },  // or "query"
+  "source":  { "kind": "file", "path": "...", "byteLength": 2417 },  // kind "stdin" | "query" too
   "format":  "NativeProtocol",          // | Native | RowBinaryWithNamesAndTypes
   "formatDetected": true,                // false when forced via --format
   "protocolVersion": 54482,              // negotiated (chproto) / requested (native) / null (rowbinary)

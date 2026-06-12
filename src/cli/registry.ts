@@ -40,6 +40,41 @@ export const COMMANDS: CommandDoc[] = [
       { flag: '--help, -h', description: 'Show help for this command.' },
     ],
   },
+  {
+    name: 'query',
+    summary: 'Run a query and decode the result in one step (native TCP capture or HTTP).',
+    usage: 'chfx query --query "<sql>" [--protocol tcp|http] [--format ...] [connection options]',
+    details:
+      'tcp (default): drive clickhouse-client through a capturing proxy and decode the full packet ' +
+      'stream (--save keeps the .chproto). http: POST to ClickHouse HTTP, request --format, decode the body.',
+    options: [
+      { flag: '--query', value: 'sql', description: 'SQL to run (required).' },
+      { flag: '--protocol', value: 'tcp|http', description: 'Transport. tcp = native capture (default); http = HTTP request.' },
+      { flag: '--format', value: 'native|RowBinaryWithNamesAndTypes', description: 'HTTP body format to request + decode (http only; default native).' },
+      { flag: '--protocol-version', value: 'N', description: 'client_protocol_version for an http Native query (default 0).' },
+      { flag: '--save', value: 'file', description: 'Write the raw .chproto capture here (tcp only).' },
+      { flag: '--host / --port', value: 'h / p', description: 'Server host / port (env CH_NATIVE_HOST, CH_NATIVE_PORT/CH_HTTP_PORT; default 9000 tcp, 8123 http).' },
+      { flag: '--user / --password', description: 'Credentials (env CH_USER / CH_PASSWORD).' },
+      { flag: '--database', value: 'db', description: 'Default database (env CH_DATABASE).' },
+      { flag: '--setting', value: 'k=v', description: 'Per-query setting; repeatable.' },
+      { flag: '--no-experimental-settings', description: 'Do not send Variant/Dynamic/JSON/QBit enabling settings.' },
+      { flag: '--client', value: 'path', description: 'Path to clickhouse-client, tcp only (env CLICKHOUSE_CLIENT).' },
+      { flag: '--no-node-bytes / --compact', description: 'Same output controls as decode.' },
+      { flag: '--help, -h', description: 'Show help for this command.' },
+    ],
+  },
+  {
+    name: 'capture',
+    summary: 'Capture a query over the native protocol to a .chproto dump (no decode).',
+    usage: 'chfx capture --query "<sql>" [--out <file>] [connection options]',
+    details: 'Writes the dump to --out, or streams raw dump bytes to stdout when --out is omitted.',
+    options: [
+      { flag: '--query', value: 'sql', description: 'SQL to run (required).' },
+      { flag: '--out, -o', value: 'file', description: 'Write the .chproto dump here; omit to stream raw bytes to stdout.' },
+      { flag: '(connection)', description: 'Same --host/--port/--user/--password/--database/--setting/--client as query.' },
+      { flag: '--help, -h', description: 'Show help for this command.' },
+    ],
+  },
 ];
 
 export function findCommand(name: string): CommandDoc | undefined {

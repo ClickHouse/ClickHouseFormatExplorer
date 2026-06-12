@@ -19,7 +19,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "capture": "node scripts/capture-native.mjs",
+    "capture": "tsx src/cli/index.ts capture",
     "cli": "tsx src/cli/index.ts",
     "cli:build": "node scripts/build-cli.mjs",
     "electron:dev": "ELECTRON=true vite dev",
