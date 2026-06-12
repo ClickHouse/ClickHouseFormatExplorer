@@ -165,8 +165,11 @@ async function runOnce(d: ProxyDeps, config: ProxyConfig): Promise<CommandOutput
 
   d.writeDiag(
     `chfx proxy: listening on ${server.host}:${server.port} → ${config.target.host}:${config.target.port} ` +
-      `(single-shot). Point your ClickHouse client at it.`,
+      `(single-shot). Point your ClickHouse client at it; Ctrl-C finalizes a still-open connection.`,
   );
+  // Ctrl-C closes the proxy, which flushes a partial capture for a connection
+  // that is still open (e.g. a pooled driver that never closes its socket).
+  d.registerShutdown(() => server.close());
   await server.done;
 
   if (!captured) {

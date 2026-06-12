@@ -27,13 +27,26 @@ import { ClickHouseFormat } from '../core/types/formats';
 
 const IMAGE = 'clickhouse/clickhouse-server:latest';
 
-/** Bind an ephemeral port, then release it — gives a (very likely) free port. */
-async function freePort(): Promise<number> {
-  const srv = net.createServer();
-  await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve));
-  const port = (srv.address() as net.AddressInfo).port;
-  await new Promise<void>((resolve) => srv.close(() => resolve()));
-  return port;
+/**
+ * Reserve `n` *distinct* free ports by binding them all simultaneously, then
+ * releasing. Binding at once guarantees uniqueness (sequential bind+close can
+ * hand back the same ephemeral port twice). Each test then claims its own port,
+ * so a lingering socket from one test can't EADDRINUSE the next.
+ */
+async function freePorts(n: number): Promise<number[]> {
+  const servers = await Promise.all(
+    Array.from(
+      { length: n },
+      () =>
+        new Promise<net.Server>((resolve) => {
+          const s = net.createServer();
+          s.listen(0, '127.0.0.1', () => resolve(s));
+        }),
+    ),
+  );
+  const ports = servers.map((s) => (s.address() as net.AddressInfo).port);
+  await Promise.all(servers.map((s) => new Promise<void>((r) => s.close(() => r()))));
+  return ports;
 }
 
 async function waitFor(pred: () => boolean, label: string, timeoutMs = 45000): Promise<void> {
@@ -48,15 +61,21 @@ const hexOf = (s: string) => Buffer.from(s, 'utf-8').toString('hex');
 
 describe('chfx proxy — integration (real ClickHouse + real native client)', () => {
   let container: StartedClickHouseContainer;
-  let listenPort: number;
   let targetEndpoint: string;
   let tmp: string;
+  let portPool: number[] = [];
+  /** Claim a fresh listen port for a test (distinct, pre-exposed to containers). */
+  const nextPort = (): number => {
+    const port = portPool.shift();
+    if (port === undefined) throw new Error('port pool exhausted — increase the count in beforeAll');
+    return port;
+  };
 
   beforeAll(async () => {
-    // Expose the (future) proxy port to containers BEFORE starting ClickHouse,
-    // so the container can resolve host.testcontainers.internal:<listenPort>.
-    listenPort = await freePort();
-    await TestContainers.exposeHostPorts(listenPort);
+    // Reserve a distinct port per test and expose them ALL to containers BEFORE
+    // starting ClickHouse, so each can resolve host.testcontainers.internal:<port>.
+    portPool = await freePorts(12);
+    await TestContainers.exposeHostPorts(...portPool);
     container = await new ClickHouseContainer(IMAGE).start();
     targetEndpoint = `${container.getHost()}:${container.getPort()}`;
     tmp = mkdtempSync(join(tmpdir(), 'chfx-proxy-'));
@@ -71,13 +90,13 @@ describe('chfx proxy — integration (real ClickHouse + real native client)', ()
    * Run `clickhouse-client` inside the container, connecting back through the
    * host proxy. Returns when the client exits (so the proxied connection closes).
    */
-  async function clientQuery(sql: string): Promise<void> {
+  async function clientQuery(sql: string, port: number): Promise<void> {
     const result = await container.exec([
       'clickhouse-client',
       '--host',
       'host.testcontainers.internal',
       '--port',
-      String(listenPort),
+      String(port),
       '--user',
       'test',
       '--password',
@@ -114,10 +133,11 @@ describe('chfx proxy — integration (real ClickHouse + real native client)', ()
    * is listening. Resolves with the command's output + captured diagnostics.
    */
   async function runOnce(args: string[], sql: string) {
+    const port = nextPort();
     const { deps, text, diag } = makeDeps();
-    const pending = proxyCommand(['--listen', String(listenPort), '--target', targetEndpoint, ...args], deps);
+    const pending = proxyCommand(['--listen', String(port), '--target', targetEndpoint, ...args], deps);
     await waitFor(() => diag.some((d) => /listening on/.test(d)), 'proxy listening');
-    await clientQuery(sql);
+    await clientQuery(sql, port);
     const out = await pending;
     return { out, text, diag };
   }
@@ -178,29 +198,31 @@ describe('chfx proxy — integration (real ClickHouse + real native client)', ()
   }, 90000);
 
   it('accepts a host:port form for --listen', async () => {
+    const port = nextPort();
     const { deps, diag } = makeDeps();
     const pending = proxyCommand(
-      ['--listen', `127.0.0.1:${listenPort}`, '--target', targetEndpoint, '--decode'],
+      ['--listen', `127.0.0.1:${port}`, '--target', targetEndpoint, '--decode'],
       deps,
     );
     await waitFor(() => diag.some((d) => /listening on/.test(d)), 'proxy listening');
-    await clientQuery('SELECT 1');
+    await clientQuery('SELECT 1', port);
     const out = await pending;
     expect(out.stdout).toBe('json');
-    expect(diag.some((d) => d.includes(`127.0.0.1:${listenPort}`))).toBe(true);
+    expect(diag.some((d) => d.includes(`127.0.0.1:${port}`))).toBe(true);
   }, 90000);
 
   it('persistent --save-dir: writes one dump per connection until stopped', async () => {
+    const port = nextPort();
     const dir = join(tmp, 'persist-dumps');
     const { deps, diag, shutdown } = makeDeps();
     const pending = proxyCommand(
-      ['--listen', String(listenPort), '--target', targetEndpoint, '--persistent', '--save-dir', dir],
+      ['--listen', String(port), '--target', targetEndpoint, '--persistent', '--save-dir', dir],
       deps,
     );
     await waitFor(() => diag.some((d) => /listening on/.test(d)) && typeof shutdown.fn === 'function', 'listening');
 
-    await clientQuery('SELECT 1 AS a');
-    await clientQuery('SELECT 2 AS b');
+    await clientQuery('SELECT 1 AS a', port);
+    await clientQuery('SELECT 2 AS b', port);
     await waitFor(() => readdirSync(dir).filter((f) => f.endsWith('.chproto')).length >= 2, 'two dumps written');
 
     shutdown.fn!(); // simulate Ctrl-C
@@ -217,15 +239,16 @@ describe('chfx proxy — integration (real ClickHouse + real native client)', ()
   }, 120000);
 
   it('persistent --decode: streams one JSON envelope per connection', async () => {
+    const port = nextPort();
     const { deps, text, diag, shutdown } = makeDeps();
     const pending = proxyCommand(
-      ['--listen', String(listenPort), '--target', targetEndpoint, '--persistent', '--decode', '--compact'],
+      ['--listen', String(port), '--target', targetEndpoint, '--persistent', '--decode', '--compact'],
       deps,
     );
     await waitFor(() => diag.some((d) => /listening on/.test(d)) && typeof shutdown.fn === 'function', 'listening');
 
-    await clientQuery('SELECT 10 AS x');
-    await clientQuery('SELECT 20 AS y');
+    await clientQuery('SELECT 10 AS x', port);
+    await clientQuery('SELECT 20 AS y', port);
     await waitFor(() => text.length >= 2, 'two decoded docs');
 
     shutdown.fn!();

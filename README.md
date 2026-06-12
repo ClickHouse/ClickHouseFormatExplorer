@@ -137,6 +137,17 @@ chfx proxy --listen 9100 --target 127.0.0.1:9000 --persistent --save-dir ./caps
 Diagnostics (the listen address, per-connection notices) go to **stderr**, so
 stdout stays a clean dump or JSON stream.
 
+Notes:
+- A capture completes when the **client closes its connection** (`clickhouse-client`
+  does after each `--query`). For long-lived/pooled driver connections that stay
+  open, press **Ctrl-C** — single-shot finalizes the partial capture and exits;
+  persistent stops and flushes any still-open connection.
+- In `--persistent --save-dir`, files are named `conn-0001.chproto`, `conn-0002…`
+  per run; the counter resets each run, so re-running against the same directory
+  **overwrites** earlier files. Use a fresh `--save-dir` per run to keep history.
+- For `--persistent --decode`, add `--compact` to emit one JSON document per line
+  (newline-delimited JSON), which is what stream consumers expect.
+
 ### `decode` options
 
 | Option | Description |

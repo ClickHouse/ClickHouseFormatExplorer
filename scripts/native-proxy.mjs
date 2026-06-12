@@ -139,7 +139,10 @@ export function startProxy({ targetHost, targetPort, listenHost = '127.0.0.1' })
  * segment log), this binds a caller-chosen address and can serve many
  * connections — it backs `chfx proxy`, where an external native client connects
  * through it. In `once` mode it stops itself after the first completed
- * connection; otherwise it runs until close() is called.
+ * connection; otherwise it runs until close() is called. close() (and `once`'s
+ * self-stop) flush a partial capture for any connection still open, so a client
+ * that holds its connection alive (pooled drivers, idle sessions) is captured
+ * up to the point of shutdown rather than dropped.
  *
  * @param {object} opts
  * @param {string} opts.targetHost
@@ -168,11 +171,18 @@ export function startCaptureProxy({
     let connectionCount = 0;
     /** @type {Set<import('node:net').Socket>} */
     const sockets = new Set();
+    // report() callbacks for connections that haven't emitted a capture yet, so
+    // close() can flush a partial capture (e.g. Ctrl-C while a connection is
+    // still open, or a long-lived pooled client) instead of dropping it.
+    /** @type {Set<() => void>} */
+    const reporters = new Set();
 
     const finish = () => {
       if (settled) return;
       settled = true;
       try { server.close(); } catch { /* ignore */ }
+      // Flush whatever each still-open connection captured before tearing down.
+      for (const report of [...reporters]) report();
       for (const s of sockets) s.destroy();
       resolveDone();
     };
@@ -191,6 +201,7 @@ export function startCaptureProxy({
       const report = () => {
         if (reported) return;
         reported = true;
+        reporters.delete(report);
         const { c2s, s2c } = splitStreams(segments);
         /** @type {Capture} */
         const capture = {
@@ -206,20 +217,25 @@ export function startCaptureProxy({
         }
         if (once) finish();
       };
+      reporters.add(report);
 
       const closeOne = () => {
         openEnds -= 1;
         if (openEnds === 0) report();
       };
 
+      // Forward with backpressure so a slow consumer can't make us buffer the
+      // whole stream in the socket layer (we already retain it in `segments`).
       client.on('data', (chunk) => {
         segments.push({ dir: DIR_C2S, data: Buffer.from(chunk) });
-        upstream.write(chunk);
+        if (upstream.write(chunk) === false) client.pause();
       });
+      upstream.on('drain', () => client.resume());
       upstream.on('data', (chunk) => {
         segments.push({ dir: DIR_S2C, data: Buffer.from(chunk) });
-        client.write(chunk);
+        if (client.write(chunk) === false) upstream.pause();
       });
+      client.on('drain', () => upstream.resume());
       client.on('end', () => upstream.end());
       upstream.on('end', () => client.end());
       client.on('close', () => { sockets.delete(client); closeOne(); });

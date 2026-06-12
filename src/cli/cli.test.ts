@@ -637,6 +637,14 @@ describe('parseHostPort', () => {
     expect(() => parseHostPort('99999', { flag: 'listen' })).toThrow(/between 1 and 65535/);
     expect(() => parseHostPort('host:nope', { flag: 'target', defaultPort: 9000 })).toThrow(/between 1 and 65535/);
   });
+
+  it('parses bracketed and bare IPv6 addresses', () => {
+    expect(parseHostPort('[::1]:9000', { flag: 'listen' })).toEqual({ host: '::1', port: 9000 });
+    expect(parseHostPort('[2001:db8::1]:9100', { flag: 'target', defaultPort: 9000 })).toEqual({ host: '2001:db8::1', port: 9100 });
+    expect(parseHostPort('::1', { flag: 'target', defaultPort: 9000 })).toEqual({ host: '::1', port: 9000 });
+    expect(() => parseHostPort('::1', { flag: 'listen' })).toThrow(/needs a port/);
+    expect(() => parseHostPort('[::1', { flag: 'listen' })).toThrow(/unterminated IPv6/);
+  });
 });
 
 /** A proxy capture from a real fixture, stamped with proxy meta (connection id). */
@@ -831,5 +839,35 @@ describe('startCaptureProxy — real sockets', () => {
     await proxy.done;
     proxy.close();
     expect(errors.length).toBeGreaterThan(0);
+  }, 15000);
+
+  it('flushes a partial capture when closed while a connection is still open', async () => {
+    // Upstream that accepts and stays open (never closes the connection).
+    const upstream = net.createServer((sock) => sock.on('data', () => {}));
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const upPort = (upstream.address() as net.AddressInfo).port;
+
+    let captured: Capture | undefined;
+    const proxy = await startCaptureProxy({
+      targetHost: '127.0.0.1',
+      targetPort: upPort,
+      once: true,
+      onCapture: (c) => {
+        captured = c;
+      },
+    });
+
+    const client = net.connect(proxy.port, proxy.host, () => client.write(Buffer.from([0x09, 0x08, 0x07])));
+    client.on('error', () => {});
+    // Wait until the bytes have traversed the proxy, with the connection still open.
+    await new Promise<void>((resolve) => setTimeout(resolve, 150));
+
+    proxy.close(); // simulate Ctrl-C: must flush the in-flight capture, not drop it.
+    await proxy.done;
+    client.destroy();
+    upstream.close();
+
+    expect(captured).toBeDefined();
+    expect([...captured!.c2s]).toEqual([0x09, 0x08, 0x07]);
   }, 15000);
 });

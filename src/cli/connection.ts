@@ -79,15 +79,30 @@ export function parseHostPort(
   let host = defaultHost;
   let portRaw: string | undefined;
 
-  const colon = raw.lastIndexOf(':');
-  if (colon !== -1) {
-    const left = raw.slice(0, colon);
-    if (left) host = left;
-    portRaw = raw.slice(colon + 1);
-  } else if (/^\d+$/.test(raw)) {
-    portRaw = raw;
+  if (raw.startsWith('[')) {
+    // Bracketed IPv6: [::1] or [::1]:9000
+    const end = raw.indexOf(']');
+    if (end === -1) throw new CliError('usage', `--${flag}: unterminated IPv6 address: ${raw}`);
+    host = raw.slice(1, end);
+    const rest = raw.slice(end + 1);
+    if (rest.startsWith(':')) portRaw = rest.slice(1);
+    else if (rest !== '') throw new CliError('usage', `--${flag}: unexpected text after IPv6 address: ${raw}`);
   } else {
-    host = raw;
+    const firstColon = raw.indexOf(':');
+    const lastColon = raw.lastIndexOf(':');
+    if (firstColon !== -1 && firstColon === lastColon) {
+      // Exactly one colon → host:port (host may be empty → default).
+      const left = raw.slice(0, lastColon);
+      if (left) host = left;
+      portRaw = raw.slice(lastColon + 1);
+    } else if (firstColon !== -1) {
+      // Multiple colons, unbracketed → a bare IPv6 literal with no port.
+      host = raw;
+    } else if (/^\d+$/.test(raw)) {
+      portRaw = raw;
+    } else {
+      host = raw;
+    }
   }
 
   if (portRaw === undefined || portRaw === '') {
