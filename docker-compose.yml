@@ -1,0 +1,34 @@
+# Self-contained deployment: bundled ClickHouse + nginx + capture server.
+#
+#   docker compose up -d --build        # build and start (http://<host>:8080)
+#   docker compose logs -f              # follow logs
+#   docker compose down                 # stop and remove
+#
+# Override the web port, read-only mode, or bundled ClickHouse version without
+# editing this file:
+#   WEB_PORT=9000 docker compose up -d --build
+#   READONLY=0      docker compose up -d --build   # allow INSERT/DDL (internal use)
+#   CH_VERSION=24.3 docker compose build           # pin the bundled server version
+services:
+  explorer:
+    build:
+      context: .
+      args:
+        # Bundled ClickHouse server image tag, baked at build time (default latest).
+        CH_VERSION: "${CH_VERSION:-latest}"
+    image: rowbinary-explorer
+    ports:
+      # host:container — the app/nginx listens on 80 inside the container.
+      - "${WEB_PORT:-8080}:80"
+    environment:
+      # READONLY=1 (default) serves the read-only viewer user.
+      # Set READONLY=0 for an internal deployment that may INSERT / run DDL.
+      READONLY: "${READONLY:-1}"
+    restart: unless-stopped
+    volumes:
+      # Persist the bundled ClickHouse data across restarts (drop this line for
+      # a fully ephemeral instance).
+      - clickhouse-data:/var/lib/clickhouse
+
+volumes:
+  clickhouse-data:

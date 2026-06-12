@@ -1,3 +1,10 @@
+# CH_VERSION selects the bundled ClickHouse server image tag, baked at build
+# time. Override with `--build-arg CH_VERSION=24.3` or via docker-compose
+# (`CH_VERSION=24.3 docker compose build`). Defaults to the latest release.
+# Declared before the first FROM so it is a global ARG usable in the runtime
+# stage's FROM below.
+ARG CH_VERSION=latest
+
 # Build stage
 FROM node:20-alpine AS builder
 WORKDIR /app
@@ -7,7 +14,7 @@ COPY . .
 RUN npm run build
 
 # Runtime stage
-FROM clickhouse/clickhouse-server:latest
+FROM clickhouse/clickhouse-server:${CH_VERSION}
 
 # Install nginx and supervisor
 RUN apt-get update && apt-get install -y nginx supervisor && rm -rf /var/lib/apt/lists/*
