@@ -88,6 +88,9 @@ async function runTcp(
     throw new CliError('usage', '--format only applies to --protocol http');
   }
   const save = stringOption(args, 'save');
+  if (save === '-') {
+    throw new CliError('usage', "--save '-' is not supported (stdout carries the decoded JSON); pass a file path");
+  }
   const captureOpts = resolveCaptureOptions(args);
 
   let capture: Capture;

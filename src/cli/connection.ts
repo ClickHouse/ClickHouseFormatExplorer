@@ -68,8 +68,8 @@ export function resolveQueryBase(args: ParsedArgs): QueryBase {
 function parsePort(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
   const port = Number(raw);
-  if (!Number.isInteger(port) || port <= 0) {
-    throw new CliError('usage', `--port must be a positive integer, got: ${raw}`);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new CliError('usage', `--port must be an integer between 1 and 65535, got: ${raw}`);
   }
   return port;
 }

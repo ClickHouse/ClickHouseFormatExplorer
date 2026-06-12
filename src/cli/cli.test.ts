@@ -275,6 +275,12 @@ describe('resolveCaptureOptions', () => {
       CliError,
     );
   });
+
+  it('rejects an out-of-range port', () => {
+    expect(() =>
+      resolveCaptureOptions(parseArgs(['--query', 'x', '--port', '99999'], { valueFlags: ['query', 'port'] })),
+    ).toThrow(/between 1 and 65535/);
+  });
 });
 
 describe('query / capture (with injected capture)', () => {
@@ -481,6 +487,11 @@ describe('query / capture — failure modes', () => {
 
   it('rejects an unexpected positional argument', async () => {
     await expect(queryCommand(['--query', 'x', 'extra'])).rejects.toThrow(/unexpected argument: extra/);
+  });
+
+  it("rejects --save '-' (stdout already carries the JSON)", async () => {
+    await expect(queryCommand(['--query', 'x', '--save', '-'], { captureQuery: async () => fakeCaptureOf(fixtures[0]) }))
+      .rejects.toThrow(/--save '-' is not supported/);
   });
 
   it('wraps a capture-command failure as an io error', async () => {
