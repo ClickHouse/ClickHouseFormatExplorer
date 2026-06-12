@@ -64,6 +64,22 @@ export function startProxy({ targetHost, targetPort, listenHost = '127.0.0.1' })
     });
 
     let handled = false;
+    // Settle `done` exactly once. Crucially, `close()` resolves it too, so a
+    // caller can always unblock `await done` even if no client ever connected
+    // (e.g. the client rejected a bad flag and exited before connecting).
+    let settled = false;
+    const finishOk = () => {
+      if (settled) return;
+      settled = true;
+      try { server.close(); } catch { /* ignore */ }
+      resolveDone(segments);
+    };
+    const finishErr = (/** @type {Error} */ err) => {
+      if (settled) return;
+      settled = true;
+      try { server.close(); } catch { /* ignore */ }
+      rejectDone(err);
+    };
 
     const server = net.createServer((client) => {
       if (handled) {
@@ -77,10 +93,7 @@ export function startProxy({ targetHost, targetPort, listenHost = '127.0.0.1' })
       let openEnds = 2;
       const closeOne = () => {
         openEnds -= 1;
-        if (openEnds === 0) {
-          server.close();
-          resolveDone(segments);
-        }
+        if (openEnds === 0) finishOk();
       };
 
       client.on('data', (chunk) => {
@@ -100,8 +113,7 @@ export function startProxy({ targetHost, targetPort, listenHost = '127.0.0.1' })
       const fail = (/** @type {Error} */ err) => {
         client.destroy();
         upstream.destroy();
-        try { server.close(); } catch { /* ignore */ }
-        rejectDone(err);
+        finishErr(err);
       };
       client.on('error', fail);
       upstream.on('error', fail);
@@ -114,7 +126,8 @@ export function startProxy({ targetHost, targetPort, listenHost = '127.0.0.1' })
         reject(new Error('proxy failed to bind an ephemeral port'));
         return;
       }
-      resolve({ port: addr.port, done, close: () => server.close() });
+      // `close()` resolves `done` with whatever was captured so far.
+      resolve({ port: addr.port, done, close: finishOk });
     });
   });
 }
@@ -178,10 +191,17 @@ export async function captureQuery({
   let segments;
   try {
     const code = await exit;
+    if (code !== 0) {
+      // The client exited non-zero. If it failed before completing a proxied
+      // connection (e.g. it rejected a bad --setting flag at startup), `done`
+      // never resolves on its own. Give any in-flight close events a brief
+      // window, then force the proxy closed so we don't hang forever.
+      await Promise.race([done, new Promise((r) => setTimeout(r, 100))]);
+      close();
+    }
     segments = await done;
     if (code !== 0 && segments.every((s) => s.dir === DIR_C2S)) {
       // Client failed before the server answered anything useful.
-      close();
       throw new Error(`clickhouse-client exited ${code}: ${stderr.trim()}`);
     }
   } catch (err) {

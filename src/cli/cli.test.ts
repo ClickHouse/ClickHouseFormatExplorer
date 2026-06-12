@@ -13,6 +13,7 @@ import { parseArgs, stringOption, boolOption, arrayOption } from './args';
 import { stringify, CliError } from './output';
 import { ClickHouseFormat } from '../core/types/formats';
 import { parseChprotoDump } from '../core/decoder/protocol-dump';
+import { captureQuery } from '../../scripts/native-proxy.mjs';
 
 /** Run `fn` with env vars temporarily set, restoring prior values after. */
 function withEnv(vars: Record<string, string | undefined>, fn: () => void): void {
@@ -516,6 +517,15 @@ describe('connection — env fallbacks & precedence', () => {
     );
     expect(opts.settings!.allow_experimental_json_type).toBe('0');
   });
+});
+
+describe('native proxy — no hang when the client exits before connecting', () => {
+  it('rejects instead of hanging when clickhouse-client exits pre-connect', async () => {
+    // `false` exits non-zero immediately without ever connecting to the proxy.
+    // Before the fix this hung forever (the proxy `done` never resolved); the
+    // 10s timeout fails the test if that regresses.
+    await expect(captureQuery({ query: 'SELECT 1', clientPath: 'false' })).rejects.toThrow(/exited/);
+  }, 10000);
 });
 
 describe('end-to-end via tsx (entry, stdin, exit codes)', () => {
