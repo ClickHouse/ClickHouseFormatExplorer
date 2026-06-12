@@ -13,6 +13,7 @@ A tool for visualizing ClickHouse RowBinary and Native format data. Features an 
 - **Interactive Highlighting**: Selecting a node in the tree highlights corresponding bytes in the hex view (and vice versa)
 - **Full Type Support**: All ClickHouse types including Variant, Dynamic, JSON, Geo types, Nested, etc.
 - **Desktop App**: Electron app that connects to your existing ClickHouse server (no bundled DB)
+- **CLI (`chfx`)**: Decode `.chproto` / Native / RowBinary dumps to structured JSON from the terminal — agent-friendly
 
 ## Quick Start (Docker)
 
@@ -40,6 +41,100 @@ CH_VERSION=24.3 docker compose build
 ```
 
 The version is baked into the image — rebuild to change it.
+
+## CLI (`chfx`)
+
+A command-line tool that runs or decodes ClickHouse wire-format data and prints
+structured JSON — the same AST the web UI renders, plus the raw bytes — so it
+can be scripted or driven by an agent.
+
+### Quick start
+
+```bash
+npm install
+npm run cli:build   # build the binary → dist/cli/index.js
+npm link            # makes `chfx` available on your PATH (points at the built binary)
+
+# Run a query and see it decoded — one step, no intermediate file:
+chfx query --query "SELECT number AS n, [number] AS arr FROM numbers(3)"
+
+# Decode a dump you already have (or pipe one in):
+chfx decode capture.chproto
+clickhouse-client -q "SELECT 1 FORMAT Native" | chfx decode -f native -
+```
+
+> Prefer not to `npm link`? Use `npm run cli -- <args>` (runs from source via
+> tsx, no build) or `node dist/cli/index.js <args>` after `cli:build`.
+
+Output is a single JSON document on **stdout**; diagnostics and a JSON error
+envelope go to **stderr**. Exit codes: `0` success, `2` usage error, `1` I/O or
+decode error.
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `chfx query --query "<sql>"` | Run a query **and decode it** in one step (no file). `--protocol tcp` (default) captures the native packet stream via `clickhouse-client`; `--protocol http` POSTs to ClickHouse HTTP and decodes the `--format` body. `--save <f>` keeps the `.chproto` dump (tcp). |
+| `chfx capture --query "<sql>"` | Capture a query to a `.chproto` dump only (native protocol). Writes `--out <f>`, or streams raw bytes to stdout (so `chfx capture … \| chfx decode` works). `npm run capture` is an alias. |
+| `chfx decode [file]` | Decode a `.chproto`, Native, or RowBinary dump to JSON. Reads stdin when no file (or `-`) is given. |
+| `chfx --help` / `chfx <cmd> --help` | Human-readable help. |
+| `chfx --version` | Print the version. |
+
+### `query` transport options
+
+| Option | Description |
+|--------|-------------|
+| `--protocol tcp\|http` | Transport. `tcp` (default) = native capture via `clickhouse-client`. `http` = HTTP request. |
+| `--format native\|RowBinaryWithNamesAndTypes` | **http only** — the body format to request and decode (default `native`). |
+| `--protocol-version <N>` | `client_protocol_version` for an http Native query (default `0`). |
+| `--save <file>` | **tcp only** — also write the raw `.chproto` capture. |
+
+### Connection options (`query` / `capture`)
+
+| Option | Description |
+|--------|-------------|
+| `--query <sql>` | SQL to run (required). |
+| `--host` / `--port` | Server host / port. Env: `CH_NATIVE_HOST`, `CH_NATIVE_PORT` (tcp) / `CH_HTTP_PORT` (http). Default `127.0.0.1`, port `9000` (tcp) / `8123` (http). |
+| `--user` / `--password` | Credentials. Env: `CH_USER` / `CH_PASSWORD`. |
+| `--database <db>` | Default database. Env: `CH_DATABASE`. |
+| `--setting k=v` | Per-query setting; repeatable. |
+| `--no-experimental-settings` | Don't send the Variant/Dynamic/JSON/QBit enabling settings (sent by default). |
+| `--client <path>` | Path to `clickhouse-client` (tcp only). Env: `CLICKHOUSE_CLIENT`. |
+| `--out <file>` (`capture`) | Where to write the `.chproto` dump. |
+
+### `decode` options
+
+| Option | Description |
+|--------|-------------|
+| `--format`, `-f` `<chproto\|native\|rowbinary>` | Force the decoder. Omitted → autodetect: `.chproto` by magic header, raw bodies by trial decode (ambiguous input errors and asks for `--format`). |
+| `--protocol-version <N>` | Native `client_protocol_version` used to interpret a raw Native body (default `0`). |
+| `--no-node-bytes` | Omit each node's inline raw bytes (consumers slice `bytesHex` by range instead). Smaller output. |
+| `--compact` | Emit single-line JSON instead of pretty-printed. |
+
+### Output shape
+
+```jsonc
+{
+  "chfx":    { "tool": "chfx", "version": "...", "schemaVersion": 1, "command": "decode" },  // or "query"
+  "source":  { "kind": "file", "path": "...", "byteLength": 2417 },  // kind "stdin" | "query" too
+  "format":  "NativeProtocol",          // | Native | RowBinaryWithNamesAndTypes
+  "formatDetected": true,                // false when forced via --format
+  "protocolVersion": 54482,              // negotiated (chproto) / requested (native) / null (rowbinary)
+  "nodeBytes": true,                     // false when --no-node-bytes was passed
+  "protocol": { "negotiatedVersion": 54482, "c2sLength": 191, "dumpMeta": { ... } },
+  "bytesHex": "0011436c...",            // the whole decoded buffer, encoded once
+  "data":    { /* ParsedData: header, rows|blocks, trailingNodes, metadata */ }
+}
+```
+
+Every node has a `byteRange` of `{start, end}` byte offsets into `bytesHex` (two
+hex chars per byte; `start` inclusive, `end` exclusive). By default each node
+**also carries its own raw bytes inline** as a `bytes` hex string, so a consumer
+can read the bytes behind any value without slicing `bytesHex` itself — pass
+`--no-node-bytes` to drop them for smaller output.
+
+> Decoded values are JSON-safe: 64-bit and larger integers become decimal
+> strings, and raw byte blobs become hex.
 
 ## Desktop App
 

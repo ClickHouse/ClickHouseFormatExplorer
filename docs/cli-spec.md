@@ -38,18 +38,31 @@ Import a binary dump from a file **or stdin** and emit structured JSON.
 - Accepts binary on **stdin** (e.g. piped from clickhouse-client) as well as a
   file path argument.
 
-#### `chfx query`
-Run SQL against a server and decode the result in one step.
-- Transport: **both, `--transport http|native`.**
-  - `http`: POST to ClickHouse HTTP, request the chosen format, decode the body.
-  - `native`: drive clickhouse-client through the capture proxy and decode the
-    full `.chproto` packet stream.
-- Default `--format native` (richest). **Experimental type settings**
-  (Variant/Dynamic/JSON enablement) are **sent by default**, with
-  `--no-experimental-settings` to disable for read-only/strict servers that
-  reject them.
-- Remote connection flags: `--host/--port/--user/--password`, env-var fallbacks,
-  and HTTPS/TLS where applicable.
+#### `chfx query` (implemented)
+Run a query **and decode it in one step** — no intermediate file — over either
+transport, emitting the same envelope as `decode`:
+- **`--protocol tcp`** (default): drives `clickhouse-client` through the
+  capturing proxy (`scripts/native-proxy.mjs`) and decodes the native packet
+  stream. `--save <file>` also writes the raw `.chproto` dump.
+- **`--protocol http`**: POSTs to ClickHouse HTTP requesting `--format`
+  (`native` | `RowBinaryWithNamesAndTypes`, default native) and decodes the
+  body. `--protocol-version <N>` sets the Native `client_protocol_version`.
+  Port defaults to 8123 (env `CH_HTTP_PORT`); user/password go via
+  `X-ClickHouse-User`/`-Key` headers.
+- SQL via the **`--query` flag**. **Experimental type settings** sent by default
+  (`--no-experimental-settings` to disable); `--setting k=v` repeatable.
+- Connection flags `--host/--port/--user/--password/--database/--client` with
+  env fallbacks (`CH_NATIVE_HOST`, `CH_NATIVE_PORT`/`CH_HTTP_PORT`, `CH_USER`,
+  `CH_PASSWORD`, `CH_DATABASE`, `CLICKHOUSE_CLIENT`).
+- **Deferred:** TLS. (The shelved own-TCP-client would remove the
+  `clickhouse-client` dependency for tcp and could revive item 3.)
+
+#### `chfx capture` (implemented)
+Capture a query to a `.chproto` dump **without decoding**. `--out <file>` (`-o`)
+writes the dump; omitted, it streams the raw dump bytes to stdout so
+`chfx capture … | chfx decode` works. Shares all `query` connection flags.
+**`npm run capture` is a thin alias** to `chfx capture` (the standalone
+`scripts/capture-native.mjs` was folded in and removed).
 
 #### `chfx proxy` (item 5 — standalone capture proxy)
 A listener that forwards to a target server and captures the native TCP stream.
@@ -66,17 +79,26 @@ through it — the proxy does not spawn the client itself.
 - **Plaintext/uncompressed only** (same constraint as today). TLS/compressed
   streams are unsupported — error clearly and document it.
 
-#### `chfx schema` / `--help`
-Machine-readable description of commands, flags, and the output JSON shape for
-agent discovery.
+#### `--help`
+Human-readable help (`chfx --help`, `chfx <command> --help`). A standalone
+machine-readable `schema` command was considered but **dropped** while the CLI
+has a single real command: `--help` covers human discovery and the `decode`
+output is already self-describing (carries `schemaVersion` and the byteRange/bytes
+conventions inline). Revisit a structured-discovery surface (a `schema` command
+or `--help --json`) once `query`/`proxy` add a multi-command contract.
 
 ### Output (item 4)
 - **Reuse the web `ParsedData`/`AstNode` shape verbatim**, serialized to JSON,
   wrapped with top-level metadata: tool/schema version, format, negotiated
-  protocol version (for captures), and the raw bytes.
-- **Raw bytes inline, once**, as a top-level **hex** string. Agents read a node's
-  `byteRange {start, end}` (exclusive end) and slice the hex to inspect bytes —
-  no second command or sidecar file.
+  protocol version (for captures), `nodeBytes`, and the raw bytes.
+- **Top-level `bytesHex`**: the whole decoded buffer encoded once as hex
+  (for NativeProtocol this is the combined c2s+s2c stream the ranges index into).
+- **Per-node inline bytes (default on)**: every node with a `byteRange {start,
+  end}` (exclusive end) also carries its own raw bytes as a `bytes` hex string,
+  so a consumer reads a value's bytes directly without slicing `bytesHex`. This
+  trades output size (parents duplicate children's bytes) for convenience;
+  `--no-node-bytes` omits them and falls back to range lookups against `bytesHex`.
+- JSON-safe values: bigints → decimal strings, byte blobs → hex.
 
 ### Tests & docs (cross-cutting)
 - **Thorough CLI tests/fixtures**: decode against the existing

@@ -98,6 +98,10 @@ export class RowBinaryDecoder extends FormatDecoder {
         values.push(node);
       }
 
+      // Guard against a non-advancing iteration (e.g. a 0-column header), which
+      // would otherwise loop forever on the remaining bytes and exhaust memory.
+      if (this.reader.offset === rowStart) break;
+
       rows.push({
         index: rowIndex++,
         byteRange: { start: rowStart, end: this.reader.offset },

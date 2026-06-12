@@ -10,7 +10,7 @@ A tool for visualizing ClickHouse RowBinary and Native wire format data. Feature
 
 The `NativeProtocol` format decodes a whole connection's packet stream rather than a single HTTP format body. A small TCP proxy (`scripts/native-proxy.mjs`, mirrored for the app in `electron/native-capture.ts`) sits between `clickhouse-client` and the server, forwarding bytes and teeing both directions into a capture. On localhost clickhouse-client disables compression, so the capture is plaintext, uncompressed packets (TLS/compression are out of scope).
 
-- Capture a dump for tests/inspection: `npm run capture -- --query "SELECT 1" --out cap.chproto` (see `scripts/capture-native.mjs`).
+- Capture a dump for tests/inspection: `npm run capture -- --query "SELECT 1" --out cap.chproto` (alias for `chfx capture`, in `src/cli/commands/capture.ts`). Or `chfx query --query "SELECT 1"` to capture **and** decode in one step.
 - `.chproto` dump format and parsing: `scripts/native-proxy.mjs` (writer) and `src/core/decoder/protocol-dump.ts` (reader).
 - Decoder: `src/core/decoder/protocol-decoder.ts` (`ProtocolDecoder`) reuses `NativeDecoder.decodeProtocolBlock()` for the Block inside Data-family packets. It derives the negotiated version from `min(client, server)` Hello and gates every field per `docs/full_native_protocol_spec.md`.
 - Capture from the **web UI**: the browser POSTs SQL to a `/capture` endpoint that runs the proxy server-side and returns the `.chproto` dump (the browser can't open raw TCP itself). Served by: `npm run dev` / `vite preview` (Vite plugin in `vite.config.ts` → `scripts/capture-middleware.mjs`), and the **Docker** image (standalone `scripts/capture-server.mjs` under supervisord, proxied by nginx). Native-connection defaults come from env: `CH_NATIVE_HOST`/`CH_NATIVE_PORT`/`CH_USER`/`CH_PASSWORD`/`CLICKHOUSE_CLIENT`; `CAPTURE_EXPERIMENTAL_SETTINGS=0` stops sending experimental type settings per-query (for read-only users that reject them — rely on the profile instead).
@@ -35,6 +35,12 @@ npm run build           # Build web app for production
 npm run test            # Run integration tests (uses testcontainers)
 npm run lint            # ESLint check
 npm run test:e2e        # Build Electron + run Playwright e2e tests
+
+# CLI (chfx) — run/decode wire-format data to structured JSON
+npm run cli -- query --query "SELECT 1"  # capture over native protocol + decode (one step)
+npm run cli -- decode capture.chproto    # decode an existing dump (run from source via tsx)
+npm run capture -- --query "SELECT 1" -o cap.chproto  # capture only (alias for `chfx capture`)
+npm run cli:build                        # bundle the publishable binary → dist/cli/index.js
 
 # Electron desktop app
 npm run electron:dev    # Dev mode with hot reload
@@ -78,6 +84,18 @@ src/
 │       └── request-params.ts  # Shared request parameter builder
 ├── store/
 │   └── store.ts          # Zustand store (query, parsed data, UI state)
+├── cli/                  # chfx CLI (Node, bundled via esbuild; reuses src/core decoders)
+│   ├── index.ts          # Entry: command dispatch, --help/--version, JSON|raw stdout, error envelope
+│   ├── commands/decode.ts# `decode` — decodeBuffer/decodeCaptureStreams + shared buildDecodeEnvelope
+│   ├── commands/query.ts # `query` — capture (proxy) + decode in one step; --save keeps the dump
+│   ├── commands/capture.ts# `capture` — capture to .chproto (file or raw stdout); `npm run capture` alias
+│   ├── connection.ts     # Shared --host/port/user/... resolution + env fallbacks + experimental settings
+│   ├── args.ts           # Dependency-free arg parser (value + repeatable flags)
+│   ├── output.ts         # CliError, JSON-safe serializer (bigint→string, bytes→hex), CommandOutput
+│   ├── registry.ts       # Command metadata for --help
+│   ├── version.ts        # Build-injected version (esbuild define)
+│   └── cli.test.ts       # Vitest unit + tsx e2e tests (uses fixtures/protocol/*.chproto)
+│   # query/capture reuse scripts/native-proxy.mjs (+ native-proxy.d.mts for types)
 └── styles/               # CSS files
 electron/
 ├── main.ts               # Electron main process (window, IPC handlers)
