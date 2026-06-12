@@ -86,7 +86,7 @@ export const COMMANDS: CommandDoc[] = [
       { flag: '--listen', value: '[host:]port', description: 'Address to listen on (host defaults to 127.0.0.1).' },
       { flag: '--target', value: 'host:port', description: 'Upstream ClickHouse native endpoint (default port 9000).' },
       { flag: '--out, -o', value: 'file', description: 'Single-shot: write the .chproto dump here (else raw dump streams to stdout).' },
-      { flag: '--decode', description: 'Decode each capture to JSON on stdout instead of writing/streaming the dump.' },
+      { flag: '--decode', description: 'Decode each capture to a JSON envelope on stdout (instead of the raw dump; combinable with --out, which still writes the dump file).' },
       { flag: '--save-dir', value: 'dir', description: 'Persistent: write one conn-NNNN.chproto per connection into this dir.' },
       { flag: '--persistent / --once', description: 'Serve many connections until Ctrl-C, or stop after the first (default --once).' },
       { flag: '--no-node-bytes / --compact', description: 'Same output controls as decode (apply when --decode is set).' },

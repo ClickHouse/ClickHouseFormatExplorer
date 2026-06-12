@@ -209,13 +209,17 @@ async function runPersistent(d: ProxyDeps, config: ProxyConfig): Promise<Command
   if (config.saveDir) await d.ensureDir(config.saveDir);
 
   let count = 0;
-  const pending: Promise<void>[] = [];
+  // Track only in-flight handlers; each removes itself on settlement so the set
+  // stays bounded no matter how many connections a long-running proxy serves.
+  const pending = new Set<Promise<void>>();
 
   const handle = await startServer(d, config, {
     once: false,
     onCapture: (capture) => {
       count += 1;
-      pending.push(handleConnection(d, capture, config));
+      const task = handleConnection(d, capture, config);
+      pending.add(task);
+      void task.finally(() => pending.delete(task));
     },
     onError: (e) => d.writeDiag(`chfx proxy: connection error: ${e.message}`),
   });
@@ -227,7 +231,7 @@ async function runPersistent(d: ProxyDeps, config: ProxyConfig): Promise<Command
   d.registerShutdown(() => handle.close());
 
   await handle.done;
-  await Promise.allSettled(pending);
+  await Promise.allSettled([...pending]);
   d.writeDiag(`chfx proxy: stopped after ${count} connection(s).`);
   return { stdout: 'none' };
 }

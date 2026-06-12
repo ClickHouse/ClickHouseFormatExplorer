@@ -252,8 +252,12 @@ export function startCaptureProxy({
       upstream.on('error', fail);
     });
 
+    // Until we're listening, an error is a startup/bind failure → reject the
+    // returned promise. Once listening (promise already resolved), reject is a
+    // no-op, so route later server errors to onError instead of dropping them.
+    let listening = false;
     server.on('error', (err) => {
-      if (!settled) reject(err);
+      if (!listening) reject(err);
       else onError?.(/** @type {Error} */ (err));
     });
     server.listen(listenPort, listenHost, () => {
@@ -262,6 +266,7 @@ export function startCaptureProxy({
         reject(new Error('proxy failed to bind a port'));
         return;
       }
+      listening = true;
       resolve({ host: listenHost, port: addr.port, done, close: finish });
     });
   });
