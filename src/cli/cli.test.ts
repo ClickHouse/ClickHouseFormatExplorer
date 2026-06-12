@@ -4,16 +4,18 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import net from 'node:net';
 
 import { decodeBuffer, decodeCommand } from './commands/decode';
 import { queryCommand } from './commands/query';
 import { captureCommand } from './commands/capture';
-import { resolveCaptureOptions, resolveHttpConnection } from './connection';
+import { proxyCommand, type ProxyDeps } from './commands/proxy';
+import { resolveCaptureOptions, resolveHttpConnection, parseHostPort } from './connection';
 import { parseArgs, stringOption, boolOption, arrayOption } from './args';
 import { stringify, CliError } from './output';
 import { ClickHouseFormat } from '../core/types/formats';
 import { parseChprotoDump } from '../core/decoder/protocol-dump';
-import { captureQuery } from '../../scripts/native-proxy.mjs';
+import { captureQuery, startCaptureProxy, encodeDump, type Capture } from '../../scripts/native-proxy.mjs';
 
 /** Run `fn` with env vars temporarily set, restoring prior values after. */
 function withEnv(vars: Record<string, string | undefined>, fn: () => void): void {
@@ -619,4 +621,215 @@ describe('end-to-end via tsx (entry, stdin, exit codes)', () => {
       rmSync(errFile, { force: true });
     }
   }, 30000);
+});
+
+describe('parseHostPort', () => {
+  it('parses bare port, host:port, and bare host (with default port)', () => {
+    expect(parseHostPort('9000', { flag: 'listen' })).toEqual({ host: '127.0.0.1', port: 9000 });
+    expect(parseHostPort('0.0.0.0:9100', { flag: 'listen' })).toEqual({ host: '0.0.0.0', port: 9100 });
+    expect(parseHostPort('db.internal', { flag: 'target', defaultPort: 9000 })).toEqual({ host: 'db.internal', port: 9000 });
+    expect(parseHostPort(':9000', { flag: 'listen' })).toEqual({ host: '127.0.0.1', port: 9000 });
+  });
+
+  it('requires a port when no default and rejects out-of-range ports', () => {
+    expect(() => parseHostPort('myhost', { flag: 'listen' })).toThrow(/needs a port/);
+    expect(() => parseHostPort('host:0', { flag: 'listen' })).toThrow(/between 1 and 65535/);
+    expect(() => parseHostPort('99999', { flag: 'listen' })).toThrow(/between 1 and 65535/);
+    expect(() => parseHostPort('host:nope', { flag: 'target', defaultPort: 9000 })).toThrow(/between 1 and 65535/);
+  });
+});
+
+/** A proxy capture from a real fixture, stamped with proxy meta (connection id). */
+function fakeProxyCapture(name: string, connection: number): Capture {
+  const c = fakeCaptureOf(name);
+  return { ...c, meta: { ...c.meta, source: 'proxy', target: '127.0.0.1:9000', connection } };
+}
+
+/** Injectable ProxyDeps that fire the given captures then resolve done. */
+function proxyHarness(captures: Capture[]) {
+  const text: string[] = [];
+  const diag: string[] = [];
+  const files: Record<string, Uint8Array> = {};
+  const dirs: string[] = [];
+  const state: { listenOpts?: Record<string, unknown>; shutdown?: () => void } = {};
+  const deps: Partial<ProxyDeps> = {
+    startCaptureProxy: async (opts) => {
+      state.listenOpts = opts as unknown as Record<string, unknown>;
+      let resolveDone!: () => void;
+      const done = new Promise<void>((r) => {
+        resolveDone = r;
+      });
+      // Fire captures on a microtask, then resolve done (simulates the server
+      // closing — in `once` mode after the first, in persistent mode on Ctrl-C).
+      queueMicrotask(() => {
+        for (const c of captures) opts.onCapture?.(c);
+        resolveDone();
+      });
+      return { host: opts.listenHost ?? '127.0.0.1', port: opts.listenPort || 0, done, close: () => resolveDone() };
+    },
+    writeText: (t) => text.push(t),
+    writeDiag: (t) => diag.push(t),
+    writeFile: async (f, b) => {
+      files[f] = b;
+    },
+    ensureDir: async (dir) => {
+      dirs.push(dir);
+    },
+    registerShutdown: (h) => {
+      state.shutdown = h;
+    },
+  };
+  return { deps, text, diag, files, dirs, state };
+}
+
+describe('proxy — single-shot (injected server)', () => {
+  it('streams the raw .chproto dump to stdout when neither --out nor --decode is given', async () => {
+    const cap = fakeProxyCapture(fixtures[0], 1);
+    const h = proxyHarness([cap]);
+    const out = await proxyCommand(['--listen', '9000', '--target', '127.0.0.1:9000'], h.deps);
+    expect(out.stdout).toBe('raw');
+    // The raw dump is returned as the command output (index.ts writes it).
+    const bytes = (out as { bytes: Uint8Array }).bytes;
+    const parsed = parseChprotoDump(bytes);
+    expect(parsed.meta?.connection).toBe(1);
+    expect(h.state.listenOpts).toMatchObject({ listenPort: 9000, targetHost: '127.0.0.1', targetPort: 9000, once: true });
+  });
+
+  it('--decode emits the shared decode envelope with proxy source', async () => {
+    const cap = fakeProxyCapture(fixtures[0], 1);
+    const h = proxyHarness([cap]);
+    const out = await proxyCommand(['--listen', '9000', '--target', '9000', '--decode'], h.deps);
+    expect(out.stdout).toBe('json');
+    const data = (out as { data: Record<string, unknown> }).data;
+    expect(data.format).toBe(ClickHouseFormat.NativeProtocol);
+    expect((data.chfx as Record<string, unknown>).command).toBe('proxy');
+    expect(data.source).toMatchObject({ kind: 'proxy', connection: 1 });
+  });
+
+  it('--out writes the dump file and returns a JSON summary', async () => {
+    const cap = fakeProxyCapture(fixtures[0], 1);
+    const h = proxyHarness([cap]);
+    const out = await proxyCommand(['--listen', '9000', '--target', '9000', '-o', '/tmp/cap.chproto'], h.deps);
+    expect(out.stdout).toBe('json');
+    expect(h.files['/tmp/cap.chproto']).toBeInstanceOf(Uint8Array);
+    const data = (out as { data: Record<string, unknown> }).data;
+    expect(data.saved).toBe('/tmp/cap.chproto');
+    expect(data.segments).toBe(cap.segments.length);
+  });
+
+  it('errors when no connection was captured', async () => {
+    const h = proxyHarness([]); // fires nothing
+    await expect(proxyCommand(['--listen', '9000', '--target', '9000'], h.deps)).rejects.toThrow(/no connection captured/);
+  });
+});
+
+describe('proxy — persistent (injected server)', () => {
+  it('--persistent --save-dir writes one dump per connection and a stop summary', async () => {
+    const caps = [fakeProxyCapture(fixtures[0], 1), fakeProxyCapture(fixtures[0], 2)];
+    const h = proxyHarness(caps);
+    const out = await proxyCommand(['--listen', '9000', '--target', '9000', '--persistent', '--save-dir', '/tmp/caps'], h.deps);
+    expect(out.stdout).toBe('none');
+    expect(h.dirs).toContain('/tmp/caps');
+    expect(Object.keys(h.files).sort()).toEqual(['/tmp/caps/conn-0001.chproto', '/tmp/caps/conn-0002.chproto']);
+    expect(h.diag.some((d) => /stopped after 2 connection/.test(d))).toBe(true);
+    expect(typeof h.state.shutdown).toBe('function');
+  });
+
+  it('--persistent --decode streams a JSON doc per connection to stdout', async () => {
+    const caps = [fakeProxyCapture(fixtures[0], 1), fakeProxyCapture(fixtures[0], 2)];
+    const h = proxyHarness(caps);
+    const out = await proxyCommand(['--listen', '9000', '--target', '9000', '--persistent', '--decode', '--compact'], h.deps);
+    expect(out.stdout).toBe('none');
+    expect(h.text).toHaveLength(2);
+    for (const doc of h.text) {
+      const parsed = JSON.parse(doc) as Record<string, unknown>;
+      expect((parsed.chfx as Record<string, unknown>).command).toBe('proxy');
+    }
+  });
+});
+
+describe('proxy — usage errors', () => {
+  const cases: Array<[string, string[], RegExp]> = [
+    ['missing --listen', ['--target', '9000'], /--listen is required/],
+    ['missing --target', ['--listen', '9000'], /--target is required/],
+    ['--persistent + --once', ['--listen', '9000', '--target', '9000', '--persistent', '--once'], /mutually exclusive/],
+    ['--persistent without a sink', ['--listen', '9000', '--target', '9000', '--persistent'], /needs an output sink/],
+    ['--out in persistent mode', ['--listen', '9000', '--target', '9000', '--persistent', '--save-dir', 'd', '-o', 'f'], /single-shot only/],
+    ['--save-dir in once mode', ['--listen', '9000', '--target', '9000', '--save-dir', 'd'], /for --persistent mode/],
+    ['unknown flag', ['--listen', '9000', '--target', '9000', '--frob'], /unknown option/],
+  ];
+  for (const [name, argv, re] of cases) {
+    it(`rejects ${name}`, async () => {
+      await expect(proxyCommand(argv, proxyHarness([]).deps)).rejects.toThrow(re);
+    });
+  }
+});
+
+describe('startCaptureProxy — real sockets', () => {
+  it('forwards both directions and captures the stream', async () => {
+    // Upstream sends a greeting on connect, then echoes whatever it receives.
+    const upstream = net.createServer((sock) => {
+      sock.write(Buffer.from([0xaa, 0xbb]));
+      sock.on('data', (d) => sock.write(d));
+      sock.on('end', () => sock.end());
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const upPort = (upstream.address() as net.AddressInfo).port;
+
+    let captured: Capture | undefined;
+    const proxy = await startCaptureProxy({
+      targetHost: '127.0.0.1',
+      targetPort: upPort,
+      once: true,
+      onCapture: (c) => {
+        captured = c;
+      },
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const client = net.connect(proxy.port, proxy.host, () => client.write(Buffer.from([0x01, 0x02, 0x03])));
+      let received = 0;
+      client.on('data', (d) => {
+        received += d.length;
+        if (received >= 5) client.end(); // greeting(2) + echo(3)
+      });
+      client.on('error', reject);
+      client.on('close', () => resolve());
+    });
+
+    await proxy.done;
+    upstream.close();
+
+    expect(captured).toBeDefined();
+    expect([...captured!.c2s]).toEqual([0x01, 0x02, 0x03]);
+    expect([...captured!.s2c]).toEqual([0xaa, 0xbb, 0x01, 0x02, 0x03]);
+    expect(captured!.meta).toMatchObject({ source: 'proxy', connection: 1, target: `127.0.0.1:${upPort}` });
+    // A round-tripped dump preserves the captured streams.
+    const round = parseChprotoDump(new Uint8Array(encodeDump(captured!)));
+    expect([...round.c2s]).toEqual([0x01, 0x02, 0x03]);
+  }, 15000);
+
+  it('does not hang in `once` mode when the upstream refuses the connection', async () => {
+    // Bind+close a port to get one that is (almost certainly) closed.
+    const tmp = net.createServer();
+    await new Promise<void>((resolve) => tmp.listen(0, '127.0.0.1', resolve));
+    const deadPort = (tmp.address() as net.AddressInfo).port;
+    await new Promise<void>((resolve) => tmp.close(() => resolve()));
+
+    const errors: Error[] = [];
+    const proxy = await startCaptureProxy({
+      targetHost: '127.0.0.1',
+      targetPort: deadPort,
+      once: true,
+      onError: (e) => errors.push(e),
+    });
+
+    const client = net.connect(proxy.port, proxy.host, () => client.write(Buffer.from([0x01])));
+    client.on('error', () => {});
+
+    // `done` must resolve even though the upstream connect failed.
+    await proxy.done;
+    proxy.close();
+    expect(errors.length).toBeGreaterThan(0);
+  }, 15000);
 });

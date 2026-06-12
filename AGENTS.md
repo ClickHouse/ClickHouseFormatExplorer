@@ -89,13 +89,15 @@ src/
 │   ├── commands/decode.ts# `decode` — decodeBuffer/decodeCaptureStreams + shared buildDecodeEnvelope
 │   ├── commands/query.ts # `query` — capture (proxy) + decode in one step; --save keeps the dump
 │   ├── commands/capture.ts# `capture` — capture to .chproto (file or raw stdout); `npm run capture` alias
-│   ├── connection.ts     # Shared --host/port/user/... resolution + env fallbacks + experimental settings
+│   ├── commands/proxy.ts # `proxy` — standalone capturing TCP proxy any native client connects through (single-shot / --persistent)
+│   ├── connection.ts     # Shared --host/port/user/... resolution + env fallbacks + experimental settings + parseHostPort
 │   ├── args.ts           # Dependency-free arg parser (value + repeatable flags)
 │   ├── output.ts         # CliError, JSON-safe serializer (bigint→string, bytes→hex), CommandOutput
 │   ├── registry.ts       # Command metadata for --help
 │   ├── version.ts        # Build-injected version (esbuild define)
 │   └── cli.test.ts       # Vitest unit + tsx e2e tests (uses fixtures/protocol/*.chproto)
-│   # query/capture reuse scripts/native-proxy.mjs (+ native-proxy.d.mts for types)
+│   # query/capture/proxy reuse scripts/native-proxy.mjs (+ native-proxy.d.mts for types).
+│   # proxy uses startCaptureProxy (fixed listen port, many connections); query/capture use startProxy (one-shot, ephemeral)
 └── styles/               # CSS files
 electron/
 ├── main.ts               # Electron main process (window, IPC handlers)

@@ -35,7 +35,11 @@ export interface RawOutput {
   stdout: 'raw';
   bytes: Uint8Array;
 }
-export type CommandOutput = JsonOutput | RawOutput;
+/** The command has already written everything itself (e.g. a streaming server). */
+export interface NoneOutput {
+  stdout: 'none';
+}
+export type CommandOutput = JsonOutput | RawOutput | NoneOutput;
 
 /**
  * JSON.stringify replacer that makes decoded values safe to serialize:

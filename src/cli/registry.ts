@@ -75,6 +75,24 @@ export const COMMANDS: CommandDoc[] = [
       { flag: '--help, -h', description: 'Show help for this command.' },
     ],
   },
+  {
+    name: 'proxy',
+    summary: 'Listen as a capturing proxy any native client connects through (no client spawned).',
+    usage: 'chfx proxy --listen [host:]port --target host:port [--out file | --save-dir dir] [--decode] [--persistent]',
+    details:
+      'Forwards every connection to --target and records the native stream. Single-shot by default (capture ' +
+      'the first connection, then exit); --persistent keeps serving until Ctrl-C. Plaintext/uncompressed only.',
+    options: [
+      { flag: '--listen', value: '[host:]port', description: 'Address to listen on (host defaults to 127.0.0.1).' },
+      { flag: '--target', value: 'host:port', description: 'Upstream ClickHouse native endpoint (default port 9000).' },
+      { flag: '--out, -o', value: 'file', description: 'Single-shot: write the .chproto dump here (else raw dump streams to stdout).' },
+      { flag: '--decode', description: 'Decode each capture to JSON on stdout instead of writing/streaming the dump.' },
+      { flag: '--save-dir', value: 'dir', description: 'Persistent: write one conn-NNNN.chproto per connection into this dir.' },
+      { flag: '--persistent / --once', description: 'Serve many connections until Ctrl-C, or stop after the first (default --once).' },
+      { flag: '--no-node-bytes / --compact', description: 'Same output controls as decode (apply when --decode is set).' },
+      { flag: '--help, -h', description: 'Show help for this command.' },
+    ],
+  },
 ];
 
 export function findCommand(name: string): CommandDoc | undefined {

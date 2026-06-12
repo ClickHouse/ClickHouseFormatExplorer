@@ -65,6 +65,42 @@ export function resolveQueryBase(args: ParsedArgs): QueryBase {
   };
 }
 
+/**
+ * Parse a `[host:]port` (or bare `port`) endpoint, used by `chfx proxy` for
+ * --listen / --target. A leading host is optional (defaults to `defaultHost`);
+ * the port may default via `defaultPort`, otherwise it is required. `flag` only
+ * shapes error messages.
+ */
+export function parseHostPort(
+  raw: string,
+  opts: { flag: string; defaultHost?: string; defaultPort?: number },
+): { host: string; port: number } {
+  const { flag, defaultHost = '127.0.0.1', defaultPort } = opts;
+  let host = defaultHost;
+  let portRaw: string | undefined;
+
+  const colon = raw.lastIndexOf(':');
+  if (colon !== -1) {
+    const left = raw.slice(0, colon);
+    if (left) host = left;
+    portRaw = raw.slice(colon + 1);
+  } else if (/^\d+$/.test(raw)) {
+    portRaw = raw;
+  } else {
+    host = raw;
+  }
+
+  if (portRaw === undefined || portRaw === '') {
+    if (defaultPort !== undefined) return { host, port: defaultPort };
+    throw new CliError('usage', `--${flag} needs a port, e.g. --${flag} 9000 or --${flag} 0.0.0.0:9000`);
+  }
+  const port = Number(portRaw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new CliError('usage', `--${flag} port must be an integer between 1 and 65535, got: ${portRaw}`);
+  }
+  return { host, port };
+}
+
 function parsePort(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
   const port = Number(raw);
