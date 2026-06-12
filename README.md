@@ -25,6 +25,22 @@ docker run -d -p 8080:80 rowbinary-explorer
 
 Open http://localhost:8080
 
+### Bundled ClickHouse version
+
+The image bundles a ClickHouse server, pinned to `latest` by default. Choose a
+specific version at **build time** with the `CH_VERSION` build argument (it maps
+to the `clickhouse/clickhouse-server:<tag>` image tag):
+
+```bash
+# docker build
+docker build --build-arg CH_VERSION=24.3 -t rowbinary-explorer .
+
+# docker compose
+CH_VERSION=24.3 docker compose build
+```
+
+The version is baked into the image — rebuild to change it.
+
 ## Desktop App
 
 For developers who already run ClickHouse locally. Download the latest release for your platform from the [Releases](../../releases) page:
