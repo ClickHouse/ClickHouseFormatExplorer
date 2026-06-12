@@ -23,7 +23,7 @@ function generalHelp(): string {
     '  --version, -V   Print version',
     '',
     'Output: a single JSON document on stdout; diagnostics and a JSON error',
-    'envelope on stderr. Run "chfx schema" for machine-readable documentation.',
+    'envelope on stderr. Exit codes: 0 ok, 2 usage, 1 i/o or decode.',
   ];
   return lines.join('\n');
 }
@@ -80,6 +80,15 @@ async function run(argv: string[]): Promise<number> {
     process.stdout.write(out.bytes);
   }
   return 0;
+}
+
+// Exit cleanly when a downstream consumer closes the pipe early (e.g. `… | head`)
+// instead of crashing with an unhandled EPIPE stack trace.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') process.exit(0);
+    throw err;
+  });
 }
 
 run(process.argv.slice(2))

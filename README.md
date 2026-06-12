@@ -52,8 +52,8 @@ can be scripted or driven by an agent.
 
 ```bash
 npm install
-npm link            # makes `chfx` available on your PATH (uses dist/cli/index.js)
-npm run cli:build   # build the binary `chfx` runs
+npm run cli:build   # build the binary → dist/cli/index.js
+npm link            # makes `chfx` available on your PATH (points at the built binary)
 
 # Run a query and see it decoded — one step, no intermediate file:
 chfx query --query "SELECT number AS n, [number] AS arr FROM numbers(3)"

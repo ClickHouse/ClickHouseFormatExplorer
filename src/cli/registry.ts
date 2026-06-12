@@ -12,7 +12,7 @@ export interface CommandDoc {
   options: OptionDoc[];
 }
 
-/** Single source of truth for `chfx schema` and the human `--help` text. */
+/** Single source of truth for the human `--help` text. */
 export const COMMANDS: CommandDoc[] = [
   {
     name: 'decode',

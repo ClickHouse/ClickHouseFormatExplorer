@@ -104,6 +104,21 @@ describe('decodeBuffer — raw bodies', () => {
     expect(() => decodeBuffer(garbage)).toThrow(CliError);
   });
 
+  it('terminates (no infinite loop / OOM) on tiny degenerate inputs', () => {
+    // A 0-column RowBinary header (0x00) used to loop forever and exhaust memory.
+    // These must each return or throw quickly — the vitest timeout guards regressions.
+    for (const bytes of [[0x00, 0x02], [0x00], [0x01], [0x00, 0x00, 0x00]]) {
+      const input = Uint8Array.from(bytes);
+      try {
+        decodeBuffer(input);
+      } catch (err) {
+        expect(err).toBeInstanceOf(CliError);
+      }
+      // Forcing rowbinary on a 0-column header must terminate too.
+      expect(() => decodeBuffer(Uint8Array.from([0x00, 0x00]), { format: 'rowbinary' })).not.toThrow();
+    }
+  });
+
   it('propagates a decode failure when forced to the wrong format', () => {
     const chproto = readFixture(fixtures[0]);
     expect(() => decodeBuffer(chproto, { format: 'rowbinary' })).toThrow();

@@ -32,13 +32,6 @@ function parseSettings(pairs: string[]): Record<string, string> {
   return out;
 }
 
-/**
- * Resolve connection + query options from CLI args, falling back to the same
- * environment variables the capture server uses (CH_NATIVE_HOST/PORT, CH_USER,
- * CH_PASSWORD, CH_DATABASE, CLICKHOUSE_CLIENT). Undefined fields let the proxy
- * apply its own defaults (127.0.0.1:9000, user "default"). Experimental type
- * settings are merged first so explicit --setting can override them.
- */
 export interface QueryBase {
   query: string;
   host?: string;

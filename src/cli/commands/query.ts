@@ -90,7 +90,11 @@ async function runTcp(
     throw new CliError('io', `capture failed: ${(err as Error).message}`);
   }
   if (save) {
-    await writeFile(save, encodeDump(capture));
+    try {
+      await writeFile(save, encodeDump(capture));
+    } catch (err) {
+      throw new CliError('io', `cannot write --save file: ${save}`, { cause: (err as Error).message });
+    }
   }
 
   const result: DecodeResult = { ...decodeCaptureStreams(capture.c2s, capture.s2c, capture.meta), formatDetected: true };

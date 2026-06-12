@@ -47,7 +47,11 @@ export async function captureCommand(
     return { stdout: 'raw', bytes: new Uint8Array(dump) };
   }
 
-  await writeFile(out, dump);
+  try {
+    await writeFile(out, dump);
+  } catch (err) {
+    throw new CliError('io', `cannot write --out file: ${out}`, { cause: (err as Error).message });
+  }
   const data = {
     chfx: { tool: 'chfx', version: CHFX_VERSION, schemaVersion: CLI_SCHEMA_VERSION, command: 'capture' },
     query: captureOpts.query,
