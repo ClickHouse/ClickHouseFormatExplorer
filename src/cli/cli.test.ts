@@ -1,18 +1,36 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { decodeBuffer, decodeCommand } from './commands/decode';
 import { queryCommand } from './commands/query';
 import { captureCommand } from './commands/capture';
-import { resolveCaptureOptions } from './connection';
+import { resolveCaptureOptions, resolveHttpConnection } from './connection';
 import { parseArgs, stringOption, boolOption, arrayOption } from './args';
 import { stringify, CliError } from './output';
 import { ClickHouseFormat } from '../core/types/formats';
 import { parseChprotoDump } from '../core/decoder/protocol-dump';
+
+/** Run `fn` with env vars temporarily set, restoring prior values after. */
+function withEnv(vars: Record<string, string | undefined>, fn: () => void): void {
+  const prior: Record<string, string | undefined> = {};
+  for (const key of Object.keys(vars)) {
+    prior[key] = process.env[key];
+    if (vars[key] === undefined) delete process.env[key];
+    else process.env[key] = vars[key];
+  }
+  try {
+    fn();
+  } finally {
+    for (const key of Object.keys(prior)) {
+      if (prior[key] === undefined) delete process.env[key];
+      else process.env[key] = prior[key];
+    }
+  }
+}
 
 const FIXTURE_DIR = fileURLToPath(new URL('../core/decoder/fixtures/protocol/', import.meta.url));
 const CLI_ENTRY = fileURLToPath(new URL('./index.ts', import.meta.url));
@@ -25,6 +43,22 @@ const enc = (s: string) => [...s].map((c) => c.charCodeAt(0));
 // Minimal valid bodies for a single column `x UInt8` with one row valued 1.
 const ROWBINARY_BODY = new Uint8Array([0x01, 0x01, ...enc('x'), 0x05, ...enc('UInt8'), 0x01]);
 const NATIVE_BODY = new Uint8Array([0x01, 0x01, 0x01, ...enc('x'), 0x05, ...enc('UInt8'), 0x01]);
+
+/** Build a fake native capture from a real fixture (for an injected captureQuery). */
+function fakeCaptureOf(name: string) {
+  const { c2s, s2c, meta } = parseChprotoDump(readFixture(name));
+  const cb = Buffer.from(c2s);
+  const sb = Buffer.from(s2c);
+  return {
+    c2s: cb,
+    s2c: sb,
+    segments: [
+      { dir: 0 as const, data: cb },
+      { dir: 1 as const, data: sb },
+    ],
+    meta: meta ?? {},
+  };
+}
 
 describe('parseArgs', () => {
   it('parses positionals, long/short flags, =values, and value flags', () => {
@@ -243,21 +277,8 @@ describe('resolveCaptureOptions', () => {
 });
 
 describe('query / capture (with injected capture)', () => {
-  // Build a fake capture from a real fixture so no server/clickhouse-client is needed.
-  function fakeCapture() {
-    const { c2s, s2c, meta } = parseChprotoDump(readFixture(fixtures[0]));
-    const cb = Buffer.from(c2s);
-    const sb = Buffer.from(s2c);
-    return {
-      c2s: cb,
-      s2c: sb,
-      segments: [
-        { dir: 0 as const, data: cb },
-        { dir: 1 as const, data: sb },
-      ],
-      meta: meta ?? {},
-    };
-  }
+  // Use a fake capture from a real fixture so no server/clickhouse-client is needed.
+  const fakeCapture = () => fakeCaptureOf(fixtures[0]);
   const deps = { captureQuery: async () => fakeCapture() };
 
   it('query captures + decodes in one step', async () => {
@@ -339,6 +360,164 @@ describe('query --protocol http (injected fetch)', () => {
   });
 });
 
+describe('decode — edge & error paths', () => {
+  it('rejects empty input as a usage error', async () => {
+    const path = join(tmpdir(), 'chfx-empty.bin');
+    writeFileSync(path, Buffer.alloc(0));
+    try {
+      await expect(decodeCommand([path])).rejects.toThrow(/empty/);
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
+
+  it('reports a missing file as an io error', async () => {
+    await expect(decodeCommand([join(tmpdir(), 'chfx-does-not-exist.bin')])).rejects.toThrow(CliError);
+  });
+
+  it('rejects an invalid --protocol-version before reading input', async () => {
+    await expect(decodeCommand(['whatever', '--protocol-version', '-1'])).rejects.toThrow(/non-negative integer/);
+    await expect(decodeCommand(['whatever', '--protocol-version', 'abc'])).rejects.toThrow(/non-negative integer/);
+  });
+
+  it('reports an ambiguous raw body (both decoders accept) as a usage error', () => {
+    // A 0x00 lead byte parses as a 0-column RowBinary header AND as a Native block.
+    expect(() => decodeBuffer(Uint8Array.from([0x00, 0x02]))).toThrow(/ambiguous/);
+  });
+});
+
+describe('query — http request construction (spied fetch)', () => {
+  it('builds URL params + auth headers + body correctly', async () => {
+    let url = '';
+    let init: RequestInit | undefined;
+    const fetchSpy = (async (u: string | URL | Request, i?: RequestInit) => {
+      url = String(u);
+      init = i;
+      return new Response(NATIVE_BODY, { status: 200 });
+    }) as typeof fetch;
+
+    await queryCommand(
+      ['--query', 'SELECT 1', '--protocol', 'http', '--user', 'bob', '--password', 'pw', '--database', 'db1', '--setting', 'max_threads=2', '--no-experimental-settings'],
+      { fetch: fetchSpy },
+    );
+
+    const parsed = new URL(url);
+    expect(parsed.port).toBe('8123');
+    expect(parsed.searchParams.get('default_format')).toBe('Native');
+    expect(parsed.searchParams.get('max_threads')).toBe('2');
+    expect(parsed.searchParams.get('database')).toBe('db1');
+    const headers = init!.headers as Record<string, string>;
+    expect(headers['X-ClickHouse-User']).toBe('bob');
+    expect(headers['X-ClickHouse-Key']).toBe('pw');
+    expect(init!.body).toBe('SELECT 1');
+  });
+
+  it('requests RowBinaryWithNamesAndTypes when --format selects it', async () => {
+    let url = '';
+    const fetchSpy = (async (u: string | URL | Request) => {
+      url = String(u);
+      return new Response(ROWBINARY_BODY, { status: 200 });
+    }) as typeof fetch;
+    await queryCommand(['--query', 'SELECT 1', '--protocol', 'http', '--format', 'RowBinaryWithNamesAndTypes'], { fetch: fetchSpy });
+    expect(new URL(url).searchParams.get('default_format')).toBe('RowBinaryWithNamesAndTypes');
+  });
+
+  it('forwards --protocol-version as client_protocol_version', async () => {
+    let url = '';
+    const fetchSpy = (async (u: string | URL | Request) => {
+      url = String(u);
+      return new Response(NATIVE_BODY, { status: 200 });
+    }) as typeof fetch;
+    // decode of the v0 body at this revision may fail; we only assert the request param.
+    await queryCommand(['--query', 'x', '--protocol', 'http', '--protocol-version', '54465'], { fetch: fetchSpy }).catch(() => {});
+    expect(new URL(url).searchParams.get('client_protocol_version')).toBe('54465');
+  });
+});
+
+describe('query / capture — failure modes', () => {
+  const throwingCapture = { captureQuery: async () => { throw new Error('boom'); } };
+  const fetchThrows = (async () => { throw new Error('ECONNREFUSED'); }) as typeof fetch;
+  const fetchEmpty = (async () => new Response(new Uint8Array(0), { status: 200 })) as typeof fetch;
+
+  it('wraps a tcp capture failure as an io error', async () => {
+    await expect(queryCommand(['--query', 'x'], throwingCapture)).rejects.toThrow(/capture failed/);
+  });
+
+  it('wraps a --save write failure as an io error', async () => {
+    const badPath = join(tmpdir(), 'chfx-no-such-dir', 'x.chproto');
+    await expect(queryCommand(['--query', 'x', '--save', badPath], { captureQuery: async () => fakeCaptureOf(fixtures[0]) }))
+      .rejects.toThrow(/cannot write --save/);
+  });
+
+  it('reports an empty http body as a decode error', async () => {
+    await expect(queryCommand(['--query', 'x', '--protocol', 'http'], { fetch: fetchEmpty })).rejects.toThrow(/empty body/);
+  });
+
+  it('wraps an http transport failure as an io error', async () => {
+    await expect(queryCommand(['--query', 'x', '--protocol', 'http'], { fetch: fetchThrows })).rejects.toThrow(/HTTP request failed/);
+  });
+
+  it('rejects an unknown --protocol', async () => {
+    await expect(queryCommand(['--query', 'x', '--protocol', 'ftp'])).rejects.toThrow(/unknown --protocol/);
+  });
+
+  it('rejects an unknown http --format', async () => {
+    await expect(queryCommand(['--query', 'x', '--protocol', 'http', '--format', 'json'], { fetch: fetchEmpty }))
+      .rejects.toThrow(/unknown --format/);
+  });
+
+  it('wraps a capture-command failure as an io error', async () => {
+    await expect(captureCommand(['--query', 'x'], throwingCapture)).rejects.toThrow(/capture failed/);
+  });
+});
+
+describe('capture — aliases & raw stdout variants', () => {
+  it('-o is an alias for --out', async () => {
+    const path = join(tmpdir(), 'chfx-capture-alias.chproto');
+    try {
+      const out = await captureCommand(['--query', 'x', '-o', path], { captureQuery: async () => fakeCaptureOf(fixtures[0]) });
+      expect(out.stdout).toBe('json');
+      expect(readFileSync(path).length).toBeGreaterThan(0);
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
+
+  it('--out - streams raw bytes to stdout', async () => {
+    const out = await captureCommand(['--query', 'x', '--out', '-'], { captureQuery: async () => fakeCaptureOf(fixtures[0]) });
+    expect(out.stdout).toBe('raw');
+  });
+});
+
+describe('connection — env fallbacks & precedence', () => {
+  it('uses CH_NATIVE_HOST/PORT when flags are absent, flags win when present', () => {
+    withEnv({ CH_NATIVE_HOST: 'envhost', CH_NATIVE_PORT: '9999' }, () => {
+      const fromEnv = resolveCaptureOptions(parseArgs(['--query', 'x'], { valueFlags: ['query'] }));
+      expect(fromEnv).toMatchObject({ host: 'envhost', port: 9999 });
+
+      const flagWins = resolveCaptureOptions(
+        parseArgs(['--query', 'x', '--host', 'flaghost', '--port', '8888'], { valueFlags: ['query', 'host', 'port'] }),
+      );
+      expect(flagWins).toMatchObject({ host: 'flaghost', port: 8888 });
+    });
+  });
+
+  it('resolveHttpConnection defaults to 127.0.0.1:8123 and honors CH_HTTP_PORT', () => {
+    const def = resolveHttpConnection(parseArgs(['--query', 'x'], { valueFlags: ['query'] }));
+    expect(def).toMatchObject({ host: '127.0.0.1', port: 8123 });
+    withEnv({ CH_HTTP_PORT: '18123' }, () => {
+      expect(resolveHttpConnection(parseArgs(['--query', 'x'], { valueFlags: ['query'] })).port).toBe(18123);
+    });
+  });
+
+  it('an explicit --setting overrides a default experimental setting', () => {
+    const opts = resolveCaptureOptions(
+      parseArgs(['--query', 'x', '--setting', 'allow_experimental_json_type=0'], { valueFlags: ['query'], multiFlags: ['setting'] }),
+    );
+    expect(opts.settings!.allow_experimental_json_type).toBe('0');
+  });
+});
+
 describe('end-to-end via tsx (entry, stdin, exit codes)', () => {
   const run = (args: string[], input?: Buffer) =>
     execFileSync('npx', ['tsx', CLI_ENTRY, ...args], { input, stdio: ['pipe', 'pipe', 'pipe'] }).toString();
@@ -365,5 +544,38 @@ describe('end-to-end via tsx (entry, stdin, exit codes)', () => {
     }
     expect(code).toBe(2);
     expect(JSON.parse(stderr).error.kind).toBe('usage');
+  }, 30000);
+
+  it('prints the version and exits 0', () => {
+    expect(run(['--version']).trim()).toMatch(/^\d+\.\d+\.\d+/);
+  }, 30000);
+
+  it('rejects an unknown command with exit 2', () => {
+    let code = 0;
+    let stderr = '';
+    try {
+      execFileSync('npx', ['tsx', CLI_ENTRY, 'frobnicate'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (err) {
+      const e = err as { status: number; stderr: Buffer };
+      code = e.status;
+      stderr = e.stderr.toString();
+    }
+    expect(code).toBe(2);
+    expect(JSON.parse(stderr).error.message).toMatch(/unknown command/);
+  }, 30000);
+
+  it('exits cleanly when stdout is closed early (no EPIPE stack trace)', () => {
+    const errFile = join(tmpdir(), 'chfx-epipe.err');
+    try {
+      // Large pretty output piped into a reader that closes after a few bytes.
+      execSync(`npx tsx "${CLI_ENTRY}" decode "${fixturePath(fixtures[0])}" 2>"${errFile}" | head -c 5 >/dev/null`, {
+        shell: '/bin/bash',
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+      const err = readFileSync(errFile, 'utf8');
+      expect(err).not.toMatch(/EPIPE|Error:|\bat /);
+    } finally {
+      rmSync(errFile, { force: true });
+    }
   }, 30000);
 });
