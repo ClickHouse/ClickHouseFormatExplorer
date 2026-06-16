@@ -103,7 +103,7 @@ export class ClickHouseClient {
       return { data, timing };
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error(`Query timeout after ${timeout}ms`);
+        throw new Error(`Query timeout after ${timeout}ms`, { cause: error });
       }
       throw error;
     } finally {
