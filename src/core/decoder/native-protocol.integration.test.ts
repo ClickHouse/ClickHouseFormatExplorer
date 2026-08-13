@@ -79,9 +79,12 @@ const NATIVE_PROTOCOL_MATRIX_CASES: NativeProtocolMatrixCase[] = [
     settings: { allow_experimental_dynamic_type: 1 },
     assertParsed: (parsed, revision) => {
       const column = parsed.blocks?.[0].columns[0];
-      const headerNode = column?.values[0];
-      expect(headerNode?.type).toBe('Dynamic.Header');
-      expect((headerNode?.value as { version: number }).version).toBe(revision >= 54473 ? 2 : 1);
+      // The Dynamic structure is a serialization prefix, so it is reported in
+      // dataPrefixNodes; `values` holds only the row values.
+      const prefixNode = column?.dataPrefixNodes.find((node) => node.type === 'Dynamic.Prefix');
+      expect(prefixNode).toBeDefined();
+      expect((prefixNode?.value as { version: number }).version).toBe(revision >= 54473 ? 2 : 1);
+      expect(column?.values.map((node) => node.value)).toEqual(['42']);
     },
   },
   {
