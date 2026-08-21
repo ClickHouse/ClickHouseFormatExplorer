@@ -195,6 +195,27 @@ export const SMOKE_TEST_CASES: SmokeTestCase[] = [
   { name: 'JSON max_dynamic_paths', query: "SELECT '{\"a\": 1, \"b\": 2, \"c\": 3}'::JSON(max_dynamic_paths=2) AS col", settings: { allow_experimental_json_type: 1 } },
 
   // ============================================================
+  // NESTED SERIALIZATION PREFIXES
+  // ============================================================
+  // In Native, a stateful element type writes its serialization prefix before
+  // the container's own data (offsets / null map / discriminators), so these
+  // shapes catch prefix-ordering desync. See docs/nativespec.md.
+  { name: 'Array of Dynamic', query: 'SELECT [1, 2]::Array(Dynamic) AS val', settings: { allow_experimental_dynamic_type: 1 } },
+  { name: 'Array of Dynamic multi-row', query: 'SELECT [number::Dynamic] AS val FROM numbers(4)', settings: { allow_experimental_dynamic_type: 1 } },
+  { name: 'Array of Array of Dynamic', query: 'SELECT [[1::Dynamic]] AS val', settings: { allow_experimental_dynamic_type: 1 } },
+  { name: 'Tuple of Dynamic', query: 'SELECT tuple(1::Dynamic) AS val', settings: { allow_experimental_dynamic_type: 1 } },
+  { name: 'Tuple of two Dynamic', query: "SELECT (1::Dynamic, 'x'::Dynamic) AS val", settings: { allow_experimental_dynamic_type: 1 } },
+  { name: 'Map value Dynamic', query: "SELECT map('k', 1::Dynamic) AS val", settings: { allow_experimental_dynamic_type: 1 } },
+  { name: 'Array of LowCardinality', query: "SELECT ['a', 'b']::Array(LowCardinality(String)) AS val" },
+  { name: 'Map value LowCardinality', query: "SELECT map('k', 'v'::LowCardinality(String)) AS val" },
+  { name: 'Tuple of LowCardinality', query: "SELECT tuple('a'::LowCardinality(String)) AS val" },
+  { name: 'Array of Variant', query: 'SELECT [42::Variant(String, UInt64)] AS val', settings: { allow_experimental_variant_type: 1 } },
+  { name: 'Tuple of Variant', query: 'SELECT tuple(42::Variant(String, UInt64)) AS val', settings: { allow_experimental_variant_type: 1 } },
+  { name: 'Array of JSON', query: "SELECT ['{\"a\": 1}'::JSON] AS val", settings: { allow_experimental_json_type: 1 } },
+  { name: 'Tuple of JSON', query: "SELECT tuple('{\"a\": 1}'::JSON) AS val", settings: { allow_experimental_json_type: 1 } },
+  { name: 'Mixed prefix types in one row', query: "SELECT [1::Dynamic] AS d, ['a'::LowCardinality(String)] AS lc, tuple(2::Variant(String, UInt64)) AS v", settings: { allow_experimental_dynamic_type: 1, allow_experimental_variant_type: 1 } },
+
+  // ============================================================
   // GEO TYPES
   // ============================================================
   { name: 'Point', query: 'SELECT (1.5, 2.5)::Point as val' },

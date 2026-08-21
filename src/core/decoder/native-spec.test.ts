@@ -341,9 +341,9 @@ describe('Native spec — versioned types', () => {
       0x02, 0x68, 0x69, // String run "hi"
       0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // UInt64 run 42
     ];
-    // The Dynamic header node is values[0]; row values follow.
-    const nodes = decodeColumn('Dynamic', data, 3);
-    expect(nodes.slice(1).map((n) => n.value)).toEqual([42n, 'hi', null]);
+    // The structure is a serialization prefix and the discriminator stream is a
+    // structural data node, so `values` holds exactly the row values.
+    expect(values('Dynamic', data, 3)).toEqual([42n, 'hi', null]);
   });
 
   it('Dynamic FLATTENED (v3) [42::UInt64, "hi", NULL]', () => {
@@ -356,9 +356,75 @@ describe('Native spec — versioned types', () => {
       0x02, 0x68, 0x69, // String run "hi"
       0x2a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // UInt64 run 42
     ];
-    const nodes = decodeColumn('Dynamic', data, 3);
-    expect(nodes.slice(1).map((n) => n.value)).toEqual([42n, 'hi', null]);
+    expect(values('Dynamic', data, 3)).toEqual([42n, 'hi', null]);
   });
+});
+
+/**
+ * ClickHouse writes the serialization prefixes for a column's whole type tree
+ * before any of its bulk data (NativeWriter::writeData runs
+ * serializeBinaryBulkStatePrefix over the root serialization first). So for a
+ * container whose element is a stateful type, the element's prefix comes BEFORE
+ * the container's offsets. Byte layouts below are from ClickHouse 26.6.
+ */
+describe('Native spec — nested serialization prefixes', () => {
+  it('Array(Dynamic) [[1, 2]] puts the Dynamic structure before the offsets', () => {
+    const data = [
+      // --- Dynamic serialization prefix (before the array offsets) ---
+      ...u64(1), // Dynamic structure version = 1
+      0x01, // max_dynamic_types
+      0x01, // num_dynamic_types
+      ...encodeString('Int64'),
+      ...u64(0), // internal Variant discriminators mode = 0
+      // --- data ---
+      ...u64(2), // array offsets: cumulative 2
+      0x00, 0x00, // Dynamic discriminators (sorted: Int64, SharedVariant): Int64, Int64
+      ...u64(1), // Int64 run: 1
+      ...u64(2), // Int64 run: 2
+    ];
+    const rows = decodeColumn('Array(Dynamic)', data, 1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].value).toEqual([1n, 2n]);
+  });
+
+  it('Array(LowCardinality(String)) [["a","b"]] puts the keys version before the offsets', () => {
+    const data = [
+      // --- LowCardinality serialization prefix (before the array offsets) ---
+      ...u64(1), // KeysSerializationVersion
+      // --- data ---
+      ...u64(2), // array offsets: cumulative 2
+      ...u64(0x600), // IndexesSerializationType: UInt8 indexes + additional keys
+      ...u64(3), // dictionary size
+      ...encodeString(''), // dictionary[0] placeholder
+      ...encodeString('a'),
+      ...encodeString('b'),
+      ...u64(2), // index count
+      0x01, 0x02, // indexes
+    ];
+    const rows = decodeColumn('Array(LowCardinality(String))', data, 1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].value).toEqual(['a', 'b']);
+  });
+
+  it('Tuple(Dynamic) puts the element structure before the tuple data', () => {
+    const data = [
+      ...u64(1), // Dynamic structure version = 1
+      0x01, // max_dynamic_types
+      0x01, // num_dynamic_types
+      ...encodeString('String'),
+      ...u64(0), // internal Variant discriminators mode = 0
+      0x01, // Dynamic discriminators (sorted: SharedVariant, String): String
+      ...encodeString('1'),
+    ];
+    const rows = decodeColumn('Tuple(Dynamic)', data, 1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].value).toEqual(['1']);
+  });
+
+  // The zero-row case (the native protocol's schema block, where a Dynamic
+  // prefix would eat the following packet's bytes) needs a protocol block
+  // rather than an HTTP one, and is covered by the
+  // 09-zero-row-schema-prefix-types.chproto fixture in protocol-decoder.test.ts.
 });
 
 describe('Native spec — JSON', () => {

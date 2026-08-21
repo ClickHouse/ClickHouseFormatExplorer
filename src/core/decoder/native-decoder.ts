@@ -27,6 +27,51 @@ interface DecodedColumnData {
   prefixNodes: AstNode[];
 }
 
+/** Pre-read state for a Dynamic column, produced by the prefix pass. */
+interface DynamicPrefixState {
+  version: bigint;
+  numTypes: number;
+  typeNames: string[];
+  variants: ClickHouseType[];
+  /** Discriminator order = [...typeNames, 'SharedVariant'] sorted alphabetically. */
+  sortedWithShared: string[];
+  /** discriminator -> index into `variants`, or -1 for SharedVariant. */
+  discToTypeIndex: Map<number, number>;
+  /** discriminator -> type name, for display. */
+  discToTypeName: Map<number, string>;
+  /** Set for the FLATTENED (version 3) layout, which has its own data layout. */
+  flattened?: boolean;
+}
+
+/**
+ * A serialization prefix read by the prefix pass, ahead of the column data.
+ *
+ * `kind` is asserted when the matching data decoder claims its entry, so any
+ * divergence between the prefix walk and the data walk fails loudly instead of
+ * silently decoding garbage.
+ */
+type PrefixEntry =
+  | { kind: 'LowCardinality'; keysVersion: bigint }
+  | { kind: 'Variant'; mode: bigint }
+  | { kind: 'Dynamic'; state: DynamicPrefixState }
+  | { kind: 'JSON'; json: JSONPrefix };
+
+/**
+ * Which of the three Object serialization layouts a JSON column uses, chosen by
+ * peeking the version word during the prefix pass.
+ */
+type JSONPrefix =
+  /** Object v0/v2: the path structure was read as the prefix. */
+  | { variant: 'structure'; structure: unknown }
+  /** Object v1: JSON-as-String; the prefix is just the version word. */
+  | { variant: 'stringFallback' }
+  /**
+   * Object v3 (FLATTENED): self-contained, already writes all of its path
+   * prefixes before its path data, so it is read whole during the data pass.
+   * A FLATTENED JSON nested inside a container is therefore still not hoisted.
+   */
+  | { variant: 'inline' };
+
 /**
  * Native format decoder (column-oriented with blocks)
  *
@@ -43,6 +88,20 @@ interface DecodedColumnData {
 export class NativeDecoder extends FormatDecoder {
   readonly format = ClickHouseFormat.Native;
   private readonly protocolVersion: number;
+
+  /**
+   * Geometry is internally a Variant over the geo types, in the alphabetical
+   * order that fixes their discriminators. Shared so the prefix pass and the
+   * data pass cannot disagree about the variant list.
+   */
+  private static readonly GEOMETRY_VARIANTS: ClickHouseType[] = [
+    { kind: 'LineString' },      // 0
+    { kind: 'MultiLineString' }, // 1
+    { kind: 'MultiPolygon' },    // 2
+    { kind: 'Point' },           // 3
+    { kind: 'Polygon' },         // 4
+    { kind: 'Ring' },            // 5
+  ];
 
   constructor(data: Uint8Array, protocolVersion: number = 0) {
     super(data);
@@ -261,9 +320,32 @@ export class NativeDecoder extends FormatDecoder {
       children: metadataChildren,
     };
 
-    // Read column data
+    // Read column data. A zero-row column has NO data bytes on the wire -- not
+    // even a serialization prefix (NativeWriter guards writeData with `if
+    // (rows)`; see docs/nativespec.md "If NumRows == 0, no data bytes are
+    // written"). Skipping the call matters for the prefix-carrying types
+    // (Dynamic, JSON, LowCardinality, Variant): their decoders read the prefix
+    // regardless of row count, so on the protocol's zero-row schema block they
+    // would consume the following packet's bytes.
     const dataStart = this.reader.offset;
-    const { values, prefixNodes } = this.decodeColumnData(type, rowCount, serializationInfo);
+    let values: AstNode[] = [];
+    let prefixNodes: AstNode[] = [];
+    if (rowCount > 0) {
+      // Phase 1: every serialization prefix in the type tree, in wire order.
+      this.prefixQueue = [];
+      this.dataAuxNodes = [];
+      prefixNodes = this.readSerializationPrefixes(type);
+      // Phase 2: the data streams, claiming the queued prefixes as they go.
+      const decoded = this.decodeColumnData(type, rowCount, serializationInfo);
+      values = decoded.values;
+      prefixNodes = [...prefixNodes, ...decoded.prefixNodes, ...this.dataAuxNodes];
+      if (this.prefixQueue.length > 0) {
+        throw new Error(
+          `Native format: ${this.prefixQueue.length} unclaimed serialization prefix(es) ` +
+            `for column "${name}" (${typeString})`,
+        );
+      }
+    }
     const dataByteRange: ByteRange = { start: dataStart, end: this.reader.offset };
 
     return {
@@ -283,6 +365,162 @@ export class NativeDecoder extends FormatDecoder {
       serializationNode: serializationResult?.astNode,
       values,
     };
+  }
+
+  // =========================================
+  // Serialization prefixes
+  // =========================================
+
+  /**
+   * Prefixes read ahead of the column data, consumed as a FIFO queue.
+   *
+   * ClickHouse writes the serialization prefixes for a column's whole type tree
+   * before any of its bulk data: NativeWriter::writeData calls
+   * serializeBinaryBulkStatePrefix once on the root serialization, which
+   * recurses into nested types, and only then writes the data streams. So for
+   * Array(Dynamic) the Dynamic structure comes before the array offsets, not
+   * after them.
+   *
+   * The prefix walk (readSerializationPrefixes) and the data walk (the
+   * decode*Column methods) visit the type tree in the same depth-first order,
+   * so pairing them by order is enough -- no prefix state has to be threaded
+   * through the container decoders.
+   */
+  private prefixQueue: PrefixEntry[] = [];
+
+  /**
+   * Structural data-side nodes (Variant/Dynamic discriminator streams) collected
+   * during the data pass.
+   *
+   * They cover real bytes and must reach the AST for the hex viewer, but they
+   * are not row values, so they cannot be returned inside a column's `values`:
+   * a container like Array(Dynamic) slices its element list by row size, and a
+   * non-value node in that list would shift every element.
+   */
+  private dataAuxNodes: AstNode[] = [];
+
+  /**
+   * Read every serialization prefix in `type`'s tree, in wire order, and queue
+   * them for the data pass. Returns the AST nodes covering the prefix bytes.
+   */
+  private readSerializationPrefixes(type: ClickHouseType): AstNode[] {
+    const nodes: AstNode[] = [];
+    this.collectPrefixes(type, nodes);
+    return nodes;
+  }
+
+  /** Claim the prefix the prefix pass queued for this decoder. */
+  private takePrefix<K extends PrefixEntry['kind']>(kind: K): Extract<PrefixEntry, { kind: K }> {
+    const entry = this.prefixQueue.shift();
+    if (!entry) {
+      throw new Error(`Native format: missing ${kind} serialization prefix (prefix queue empty)`);
+    }
+    if (entry.kind !== kind) {
+      throw new Error(
+        `Native format: serialization prefix out of order (expected ${kind}, got ${entry.kind})`,
+      );
+    }
+    return entry as Extract<PrefixEntry, { kind: K }>;
+  }
+
+  /**
+   * Walk `type` in wire order, reading each nested serialization prefix.
+   *
+   * Container types (Array, Nullable, Map, Tuple, Nested, and the Array-based
+   * geo types) have no prefix of their own but must recurse, because their
+   * element's prefix is written at the container's position in the stream.
+   */
+  private collectPrefixes(type: ClickHouseType, nodes: AstNode[]): void {
+    switch (type.kind) {
+      case 'LowCardinality': {
+        // SerializationLowCardinality writes only KeysSerializationVersion
+        // here; IndexesSerializationType and the dictionary belong to the data.
+        const start = this.reader.offset;
+        const { value: keysVersion } = this.reader.readUInt64LE();
+        nodes.push({
+          id: this.generateId(),
+          type: 'UInt64',
+          byteRange: { start, end: this.reader.offset },
+          value: keysVersion,
+          displayValue: keysVersion.toString(),
+          label: 'lowcardinality_keys_version',
+        });
+        this.prefixQueue.push({ kind: 'LowCardinality', keysVersion });
+        return;
+      }
+      case 'Variant': {
+        const start = this.reader.offset;
+        const { value: mode } = this.reader.readUInt64LE();
+        nodes.push({
+          id: this.generateId(),
+          type: 'UInt64',
+          byteRange: { start, end: this.reader.offset },
+          value: mode,
+          displayValue: mode.toString(),
+          label: 'variant_mode',
+        });
+        this.prefixQueue.push({ kind: 'Variant', mode });
+        // SerializationVariant recurses in global discriminator order.
+        for (const variant of type.variants) this.collectPrefixes(variant, nodes);
+        return;
+      }
+      case 'Dynamic':
+        nodes.push(this.readDynamicPrefix());
+        return;
+      case 'JSON': {
+        const version = this.peekUInt64();
+        if (version === 3n) {
+          // FLATTENED reads its own prefixes and data in one pass.
+          this.prefixQueue.push({ kind: 'JSON', json: { variant: 'inline' } });
+          return;
+        }
+        if (version === 1n) {
+          const versionNode = this.decodeUInt64();
+          versionNode.label = 'json_version';
+          nodes.push(versionNode);
+          this.prefixQueue.push({ kind: 'JSON', json: { variant: 'stringFallback' } });
+          return;
+        }
+        const structure = this.readJSONColumnStructure(type.typedPaths);
+        this.prefixQueue.push({ kind: 'JSON', json: { variant: 'structure', structure } });
+        nodes.push(...structure.structureChildren);
+        // Typed paths are decoded (and so prefixed) in name order; mirror the
+        // order readJSONColumnData walks them in.
+        if (type.typedPaths && type.typedPaths.size > 0) {
+          for (const [, pathType] of Array.from(type.typedPaths.entries()).sort((a, b) =>
+            a[0].localeCompare(b[0]),
+          )) {
+            this.collectPrefixes(pathType, nodes);
+          }
+        }
+        return;
+      }
+      case 'Geometry':
+        // Geometry decodes as a Variant over the geo types, so it carries the
+        // Variant prefix.
+        this.collectPrefixes({ kind: 'Variant', variants: NativeDecoder.GEOMETRY_VARIANTS }, nodes);
+        return;
+      case 'Array':
+        this.collectPrefixes(type.element, nodes);
+        return;
+      case 'Nullable':
+        this.collectPrefixes(type.inner, nodes);
+        return;
+      case 'Map':
+        this.collectPrefixes(type.key, nodes);
+        this.collectPrefixes(type.value, nodes);
+        return;
+      case 'Tuple':
+        for (const element of type.elements) this.collectPrefixes(element, nodes);
+        return;
+      case 'Nested':
+        for (const field of type.fields) this.collectPrefixes(field.type, nodes);
+        return;
+      default:
+        // Everything else (primitives, and the geo types built from
+        // Tuple(Float64, Float64)) has no serialization prefix.
+        return;
+    }
   }
 
   private decodeColumnData(
@@ -1883,8 +2121,9 @@ export class NativeDecoder extends FormatDecoder {
    * 1. ArraySizes stream: N cumulative offsets as UInt64
    * 2. ArrayElements stream: flattened elements
    *
-   * Note: For Array(JSON) inside variant types, the JSON structure prefix is read
-   * separately (via readColumnPrefix) and decoding uses decodeArrayColumnWithPrefix.
+   * Note: an element type's serialization prefix (JSON structure, Dynamic
+   * structure, LowCardinality keys version, ...) is written BEFORE these
+   * offsets, and is read by the prefix pass -- see readSerializationPrefixes.
    */
   private decodeArrayColumn(elementType: ClickHouseType, rowCount: number): AstNode[] {
     const typeStr = `Array(${typeToString(elementType)})`;
@@ -2077,10 +2316,10 @@ export class NativeDecoder extends FormatDecoder {
    */
   private decodeLowCardinalityColumn(innerType: ClickHouseType, rowCount: number): AstNode[] {
     const typeStr = `LowCardinality(${typeToString(innerType)})`;
+    // KeysSerializationVersion is the serialization prefix and was already read
+    // (see readSerializationPrefixes); the data starts at IndexesSerializationType.
+    this.takePrefix('LowCardinality');
     const startOffset = this.reader.offset;
-
-    // Read KeysVersion (should be 1)
-    this.reader.readUInt64LE(); // keysVersion - not used
 
     // Read IndexesSerializationType
     const { value: serializationType } = this.reader.readUInt64LE();
@@ -2185,16 +2424,39 @@ export class NativeDecoder extends FormatDecoder {
    */
   private decodeVariantColumn(variants: ClickHouseType[], rowCount: number): AstNode[] {
     const typeStr = `Variant(${variants.map(typeToString).join(', ')})`;
+    // The discriminators mode is the serialization prefix and was already read
+    // (see readSerializationPrefixes).
+    this.takePrefix('Variant');
     const startOffset = this.reader.offset;
-
-    // Read mode (0 = BASIC)
-    const { value: _mode } = this.reader.readUInt64LE();
 
     // Read discriminators
     const discriminators: number[] = [];
+    const discNodes: AstNode[] = [];
     for (let i = 0; i < rowCount; i++) {
+      const discStart = this.reader.offset;
       const { value } = this.reader.readUInt8();
       discriminators.push(value);
+      const discType =
+        value === 0xff ? 'NULL' : (variants[value] ? typeToString(variants[value]) : `unknown(${value})`);
+      discNodes.push({
+        id: this.generateId(),
+        type: 'UInt8',
+        byteRange: { start: discStart, end: this.reader.offset },
+        value,
+        displayValue: `${value} (${discType})`,
+        label: `[${i}]`,
+      });
+    }
+    if (rowCount > 0) {
+      this.dataAuxNodes.push({
+        id: this.generateId(),
+        type: 'Variant.Discriminators',
+        byteRange: { start: startOffset, end: this.reader.offset },
+        value: discriminators,
+        displayValue: `[${discriminators.join(', ')}]`,
+        label: 'discriminators',
+        children: discNodes,
+      });
     }
 
     // Count values per variant type
@@ -2275,7 +2537,12 @@ export class NativeDecoder extends FormatDecoder {
    * V1 format (version=1): SharedVariant stores values as String representation
    * V2 format (version=2): SharedVariant stores values as binary type index + binary value
    */
-  private decodeDynamicColumn(rowCount: number): AstNode[] {
+  /**
+   * Read the Dynamic serialization prefix: the structure (version, declared
+   * type list) plus the internal Variant's mode word. Everything from the
+   * discriminators on is data, decoded later by decodeDynamicColumn.
+   */
+  private readDynamicPrefix(): AstNode {
     const startOffset = this.reader.offset;
     const headerChildren: AstNode[] = [];
 
@@ -2295,7 +2562,66 @@ export class NativeDecoder extends FormatDecoder {
     // discriminators in wire order with NULL = num_types. Selected by the query
     // setting output_format_native_use_flattened_dynamic_and_json_serialization.
     if (version === 3n) {
-      return this.decodeDynamicColumnFlattened(rowCount, startOffset, headerChildren);
+      // num_types
+      const numTypesStart = this.reader.offset;
+      const { value: numTypes } = decodeLEB128(this.reader);
+      headerChildren.push({
+        id: this.generateId(),
+        type: 'VarUInt',
+        byteRange: { start: numTypesStart, end: this.reader.offset },
+        value: numTypes,
+        displayValue: numTypes.toString(),
+        label: 'num_dynamic_types',
+      });
+
+      // Type names (wire order)
+      const typeNames: string[] = [];
+      const typeNameNodes: AstNode[] = [];
+      const typeNamesStart = this.reader.offset;
+      for (let i = 0; i < numTypes; i++) {
+        const node = this.decodeString();
+        node.label = `[${i}]`;
+        typeNames.push(node.value as string);
+        typeNameNodes.push(node);
+      }
+      if (numTypes > 0) {
+        headerChildren.push({
+          id: this.generateId(),
+          type: 'Array(String)',
+          byteRange: { start: typeNamesStart, end: this.reader.offset },
+          value: typeNames,
+          displayValue: `[${typeNames.map((t) => `"${t}"`).join(', ')}]`,
+          label: 'type_names',
+          children: typeNameNodes,
+        });
+      }
+
+      const variants = typeNames.map((name) => parseType(name));
+      this.prefixQueue.push({
+        kind: 'Dynamic',
+        state: {
+          version,
+          numTypes,
+          typeNames,
+          variants,
+          sortedWithShared: typeNames,
+          discToTypeIndex: new Map(),
+          discToTypeName: new Map(),
+          flattened: true,
+        },
+      });
+      // Per-type state prefix (empty for leaf types; recurse for stateful inner types).
+      for (const variant of variants) this.collectPrefixes(variant, headerChildren);
+
+      return {
+        id: this.generateId(),
+        type: 'Dynamic.Prefix',
+        byteRange: { start: startOffset, end: this.reader.offset },
+        value: { version: 3, numTypes, typeNames },
+        displayValue: `Dynamic(${numTypes} types, v3 FLATTENED)`,
+        label: 'prefix',
+        children: headerChildren,
+      };
     }
 
     // Read max_dynamic_types (V1 only - in V2 this field doesn't exist or has different meaning)
@@ -2387,6 +2713,45 @@ export class NativeDecoder extends FormatDecoder {
       displayValue: mode.toString(),
       label: 'variant_mode',
     });
+
+    this.prefixQueue.push({
+      kind: 'Dynamic',
+      state: { version, numTypes, typeNames, variants, sortedWithShared, discToTypeIndex, discToTypeName },
+    });
+    // The internal Variant recurses into each declared type in discriminator
+    // (alphabetical) order; SharedVariant is a plain String and has no prefix.
+    for (let disc = 0; disc < sortedWithShared.length; disc++) {
+      const typeIdx = discToTypeIndex.get(disc);
+      if (typeIdx !== undefined && typeIdx >= 0) {
+        this.collectPrefixes(variants[typeIdx], headerChildren);
+      }
+    }
+
+    return {
+      id: this.generateId(),
+      type: 'Dynamic.Prefix',
+      byteRange: { start: startOffset, end: this.reader.offset },
+      value: { version: Number(version), numTypes, typeNames },
+      displayValue: `Dynamic(${numTypes} types, v${version})`,
+      label: 'prefix',
+      children: headerChildren,
+    };
+  }
+
+  /**
+   * Decode Dynamic column data (discriminators + per-type dense runs), using the
+   * structure the prefix pass already read. See readDynamicPrefix.
+   */
+  private decodeDynamicColumn(rowCount: number): AstNode[] {
+    const { state } = this.takePrefix('Dynamic');
+    const { version, numTypes, typeNames, variants, sortedWithShared, discToTypeIndex, discToTypeName } =
+      state;
+    const startOffset = this.reader.offset;
+    const headerChildren: AstNode[] = [];
+
+    if (state.flattened) {
+      return this.decodeDynamicColumnFlattened(rowCount, startOffset, headerChildren, state);
+    }
 
     // Read discriminators
     const discriminatorsStart = this.reader.offset;
@@ -2566,19 +2931,21 @@ export class NativeDecoder extends FormatDecoder {
       }
     }
 
-    // Create header node that contains all the Dynamic column metadata
-    const headerNode: AstNode = {
-      id: this.generateId(),
-      type: 'Dynamic.Header',
-      byteRange: { start: startOffset, end: headerEndOffset },
-      value: { version: Number(version), numTypes, typeNames },
-      displayValue: `Dynamic(${numTypes} types, v${version})`,
-      label: 'header',
-      children: headerChildren,
-    };
+    // The structure itself lives in the prefix (see readDynamicPrefix); what is
+    // left on the data side is the discriminator stream.
+    if (headerChildren.length > 0) {
+      this.dataAuxNodes.push({
+        id: this.generateId(),
+        type: 'Dynamic.Discriminators',
+        byteRange: { start: startOffset, end: headerEndOffset },
+        value: { version: Number(version), numTypes, typeNames },
+        displayValue: `Dynamic(${numTypes} types, v${version})`,
+        label: 'discriminators',
+        children: headerChildren,
+      });
+    }
 
-    // Return header followed by values
-    return [headerNode, ...values];
+    return values;
   }
 
   /**
@@ -2622,44 +2989,9 @@ export class NativeDecoder extends FormatDecoder {
     rowCount: number,
     startOffset: number,
     headerChildren: AstNode[],
+    state: DynamicPrefixState,
   ): AstNode[] {
-    // num_types
-    const numTypesStart = this.reader.offset;
-    const { value: numTypes } = decodeLEB128(this.reader);
-    headerChildren.push({
-      id: this.generateId(),
-      type: 'VarUInt',
-      byteRange: { start: numTypesStart, end: this.reader.offset },
-      value: numTypes,
-      displayValue: numTypes.toString(),
-      label: 'num_dynamic_types',
-    });
-
-    // Type names (wire order)
-    const typeNames: string[] = [];
-    const typeNameNodes: AstNode[] = [];
-    const typeNamesStart = this.reader.offset;
-    for (let i = 0; i < numTypes; i++) {
-      const node = this.decodeString();
-      node.label = `[${i}]`;
-      typeNames.push(node.value as string);
-      typeNameNodes.push(node);
-    }
-    if (numTypes > 0) {
-      headerChildren.push({
-        id: this.generateId(),
-        type: 'Array(String)',
-        byteRange: { start: typeNamesStart, end: this.reader.offset },
-        value: typeNames,
-        displayValue: `[${typeNames.map((t) => `"${t}"`).join(', ')}]`,
-        label: 'type_names',
-        children: typeNameNodes,
-      });
-    }
-
-    const variants = typeNames.map((name) => parseType(name));
-    // Per-type state prefix (empty for leaf types; recurse for stateful inner types).
-    const variantPrefixes = variants.map((v) => this.readColumnPrefix(v));
+    const { numTypes, typeNames, variants } = state;
 
     // Discriminators: width by num_types + 1 (the extra slot is NULL = num_types).
     const nullDiscriminator = numTypes;
@@ -2702,7 +3034,7 @@ export class NativeDecoder extends FormatDecoder {
     const runData: AstNode[][] = [];
     for (let t = 0; t < numTypes; t++) {
       runData[t] = countPerType[t] > 0
-        ? this.decodeColumnWithPrefix(variants[t], countPerType[t], variantPrefixes[t])
+        ? this.decodeColumnData(variants[t], countPerType[t]).values
         : [];
     }
 
@@ -2737,16 +3069,18 @@ export class NativeDecoder extends FormatDecoder {
       });
     }
 
-    const headerNode: AstNode = {
-      id: this.generateId(),
-      type: 'Dynamic.Header',
-      byteRange: { start: startOffset, end: headerEndOffset },
-      value: { version: 3, numTypes, typeNames },
-      displayValue: `Dynamic(${numTypes} types, v3 FLATTENED)`,
-      label: 'header',
-      children: headerChildren,
-    };
-    return [headerNode, ...values];
+    if (headerChildren.length > 0) {
+      this.dataAuxNodes.push({
+        id: this.generateId(),
+        type: 'Dynamic.Discriminators',
+        byteRange: { start: startOffset, end: headerEndOffset },
+        value: { version: 3, numTypes, typeNames },
+        displayValue: `Dynamic(${numTypes} types, v3 FLATTENED)`,
+        label: 'discriminators',
+        children: headerChildren,
+      });
+    }
+    return values;
   }
 
   /**
@@ -2919,137 +3253,35 @@ export class NativeDecoder extends FormatDecoder {
    */
   private decodeJSONColumn(type: ClickHouseType, rowCount: number): AstNode[] {
     const startOffset = this.reader.offset;
+    // The layout was chosen by the prefix pass (see collectPrefixes → 'JSON').
+    const { json } = this.takePrefix('JSON');
+    switch (json.variant) {
+      case 'stringFallback':
+        return this.decodeJSONColumnStringFallback(rowCount, startOffset);
+      case 'inline':
+        return this.decodeJSONColumnFlattened(type, rowCount, startOffset);
+      case 'structure':
+        return this.readJSONColumnData(
+          json.structure as ReturnType<typeof this.readJSONColumnStructure>,
+          rowCount,
+          startOffset,
+        );
+    }
+  }
 
-    // Dispatch on the Object serialization version (first 8 bytes, UInt64 LE):
-    //   1 = Tier-1 String fallback (output_format_native_write_json_as_string)
-    //   3 = FLATTENED Object (output_format_native_use_flattened_dynamic_and_json_serialization)
-    //   0 / 2 = default V1 / V2 Object (max_dynamic_paths + dynamic structures + shared data)
-    const versionPeek = this.reader.peekBytes(8);
-    let peekedVersion = 0n;
+  /** Read the next 8 bytes as a little-endian UInt64 without consuming them. */
+  private peekUInt64(): bigint {
+    const bytes = this.reader.peekBytes(8);
+    let value = 0n;
     for (let i = 7; i >= 0; i--) {
-      peekedVersion = (peekedVersion << 8n) | BigInt(versionPeek[i] ?? 0);
+      value = (value << 8n) | BigInt(bytes[i] ?? 0);
     }
-    if (peekedVersion === 1n) {
-      return this.decodeJSONColumnStringFallback(rowCount, startOffset);
-    }
-    if (peekedVersion === 3n) {
-      return this.decodeJSONColumnFlattened(type, rowCount, startOffset);
-    }
-    return this.decodeJSONColumnV1(type, rowCount, startOffset);
-  }
-
-  /**
-   * Read the state prefix for a column type, if it needs one.
-   * In Native format, complex types like JSON write their structure as a prefix
-   * before the actual data. This must be read and stored for later use.
-   */
-  private readColumnPrefix(type: ClickHouseType): unknown {
-    if (type.kind === 'JSON') {
-      const jsonType = type as { kind: 'JSON'; typedPaths?: Map<string, ClickHouseType> };
-      return this.readJSONColumnStructure(jsonType.typedPaths);
-    }
-    if (type.kind === 'Array') {
-      // For arrays, recursively check if element needs a prefix
-      return this.readColumnPrefix(type.element);
-    }
-    // Other types don't need prefixes
-    return null;
-  }
-
-  /**
-   * Decode column data, using a pre-read prefix if available.
-   */
-  private decodeColumnWithPrefix(type: ClickHouseType, rowCount: number, prefix: unknown): AstNode[] {
-    if (type.kind === 'JSON' && prefix) {
-      return this.readJSONColumnData(
-        prefix as ReturnType<typeof this.readJSONColumnStructure>,
-        rowCount,
-        this.reader.offset
-      );
-    }
-    if (type.kind === 'Array' && prefix) {
-      // For Array with prefix, the prefix is for the element type
-      return this.decodeArrayColumnWithPrefix(type.element, rowCount, prefix);
-    }
-    // No prefix - use normal decoding
-    return this.decodeColumnData(type, rowCount).values;
-  }
-
-  /**
-   * Decode array column where the element type has a pre-read prefix.
-   */
-  private decodeArrayColumnWithPrefix(elementType: ClickHouseType, rowCount: number, elementPrefix: unknown): AstNode[] {
-    const typeStr = `Array(${typeToString(elementType)})`;
-    const startOffset = this.reader.offset;
-
-    // Read array offsets
-    const offsetNodes: AstNode[] = [];
-    const offsets: bigint[] = [];
-    for (let i = 0; i < rowCount; i++) {
-      const start = this.reader.offset;
-      const { value } = this.reader.readUInt64LE();
-      offsets.push(value);
-      offsetNodes.push({
-        id: this.generateId(),
-        type: 'UInt64',
-        byteRange: { start, end: this.reader.offset },
-        value,
-        displayValue: String(value),
-        label: 'array_offset',
-      });
-    }
-
-    // Calculate total elements
-    const totalElements = rowCount > 0 ? Number(offsets[rowCount - 1]) : 0;
-    const sizes: number[] = [];
-    let prevOffset = 0n;
-    for (let i = 0; i < rowCount; i++) {
-      sizes.push(Number(offsets[i] - prevOffset));
-      prevOffset = offsets[i];
-    }
-
-    // Decode elements using the prefix
-    const allElements = this.decodeColumnWithPrefix(elementType, totalElements, elementPrefix);
-
-    // Distribute to arrays
-    const values: AstNode[] = [];
-    let elementIndex = 0;
-    for (let i = 0; i < rowCount; i++) {
-      const size = sizes[i];
-      const arrayElements = allElements.slice(elementIndex, elementIndex + size);
-      elementIndex += size;
-
-      arrayElements.forEach((el, j) => {
-        el.label = `[${j}]`;
-      });
-
-      const lengthNode: AstNode = {
-        id: this.generateId(),
-        type: 'UInt64',
-        byteRange: offsetNodes[i].byteRange,
-        value: BigInt(size),
-        displayValue: `${size} (cumulative: ${offsets[i]})`,
-        label: 'length',
-      };
-
-      values.push({
-        id: this.generateId(),
-        type: typeStr,
-        byteRange: { start: startOffset, end: this.reader.offset },
-        value: arrayElements.map(e => e.value),
-        displayValue: `[${arrayElements.length} elements]`,
-        label: `[${i}]`,
-        children: [lengthNode, ...arrayElements],
-        metadata: { size },
-      });
-    }
-
-    return values;
+    return value;
   }
 
   /**
    * Read JSON column structure (version, paths, dynamic structures).
-   * Used by decodeJSONColumnV1 and via readColumnPrefix for nested JSON in Arrays/Variants.
+   * Used by decodeJSONColumnV1 and by the prefix pass for nested JSON.
    */
   private readJSONColumnStructure(typedSubColumns?: Map<string, ClickHouseType>): {
     serializationVersion: number;
@@ -3061,7 +3293,6 @@ export class NativeDecoder extends FormatDecoder {
       variants: ClickHouseType[];
       numTypes: number;
       discToTypeIndex: Map<number, number>;
-      variantPrefixes: unknown[];
     }>;
     typedSubColumns?: Map<string, ClickHouseType>;
   } {
@@ -3123,7 +3354,6 @@ export class NativeDecoder extends FormatDecoder {
       variants: ClickHouseType[];
       numTypes: number;
       discToTypeIndex: Map<number, number>;
-      variantPrefixes: unknown[];
     }> = [];
 
     for (let i = 0; i < numDynamicPaths; i++) {
@@ -3198,20 +3428,16 @@ export class NativeDecoder extends FormatDecoder {
         }
       }
 
-      // Read variant state prefixes for types that need them
-      // In Native format with BASIC variant mode, the prefix for nested complex types
-      // is written BEFORE the discriminators.
-      const variantPrefixes = variants.map((v, idx) => {
-        const prefix = this.readColumnPrefix(v);
-        // If the prefix contains structure children (e.g., nested JSON), add them
-        if (prefix && typeof prefix === 'object' && 'structureChildren' in prefix) {
-          const jsonPrefix = prefix as { structureChildren: AstNode[] };
-          for (const child of jsonPrefix.structureChildren) {
-            child.label = `${typeNames[idx]}.${child.label || ''}`;
-            dynamicStructureChildren.push(child);
-          }
+      // Read variant state prefixes for types that need them. In Native format
+      // the prefix for nested complex types is written BEFORE the
+      // discriminators, so it is queued here for the data pass to claim.
+      variants.forEach((v, idx) => {
+        const before = dynamicStructureChildren.length;
+        this.collectPrefixes(v, dynamicStructureChildren);
+        for (let c = before; c < dynamicStructureChildren.length; c++) {
+          const child = dynamicStructureChildren[c];
+          child.label = `${typeNames[idx]}.${child.label || ''}`;
         }
-        return prefix;
       });
 
       // Create a container node for this dynamic path's structure
@@ -3233,7 +3459,6 @@ export class NativeDecoder extends FormatDecoder {
         variants,
         numTypes,
         discToTypeIndex,
-        variantPrefixes,
       });
     }
 
@@ -3275,7 +3500,7 @@ export class NativeDecoder extends FormatDecoder {
     const dynamicPathData: AstNode[][] = [];
 
     for (let i = 0; i < numDynamicPaths; i++) {
-      const { typeNames, variants, numTypes, discToTypeIndex, variantPrefixes } = dynamicStructures[i];
+      const { typeNames, variants, numTypes, discToTypeIndex } = dynamicStructures[i];
 
       // Build reverse mapping: discriminator -> type name for display
       const discToTypeName = new Map<number, string>();
@@ -3308,7 +3533,7 @@ export class NativeDecoder extends FormatDecoder {
       for (let v = 0; v < numTypes; v++) {
         const count = countPerVariant[v];
         if (count > 0) {
-          variantData[v] = this.decodeColumnWithPrefix(variants[v], count, variantPrefixes[v]);
+          variantData[v] = this.decodeColumnData(variants[v], count).values;
         } else {
           variantData[v] = [];
         }
@@ -3486,21 +3711,12 @@ export class NativeDecoder extends FormatDecoder {
    * Decode JSON column using V1 format (version=0)
    * This calls readJSONColumnStructure then readJSONColumnData.
    */
-  private decodeJSONColumnV1(type: ClickHouseType, rowCount: number, startOffset: number): AstNode[] {
-    const jsonType = type as { kind: 'JSON'; typedPaths?: Map<string, ClickHouseType> };
-    const structure = this.readJSONColumnStructure(jsonType.typedPaths);
-    return this.readJSONColumnData(structure, rowCount, startOffset);
-  }
-
   /**
    * Tier-1 JSON-as-String fallback (Object serialization version 1). The column
    * is a UInt64 state prefix (= 1) followed by a standard String column whose
    * values are the JSON text for each row. See docs/full_native_spec.md.
    */
   private decodeJSONColumnStringFallback(rowCount: number, startOffset: number): AstNode[] {
-    const versionNode = this.decodeUInt64();
-    versionNode.label = 'version';
-
     const values: AstNode[] = [];
     for (let row = 0; row < rowCount; row++) {
       const strNode = this.decodeString();
@@ -3518,7 +3734,7 @@ export class NativeDecoder extends FormatDecoder {
         value: parsed,
         displayValue: text,
         label: `[${row}]`,
-        children: row === 0 ? [versionNode, strNode] : [strNode],
+        children: [strNode],
         metadata: { serializationVersion: 1, jsonText: text },
       });
     }
@@ -3564,16 +3780,16 @@ export class NativeDecoder extends FormatDecoder {
       : [];
 
     // --- Prefix phase: typed path prefixes (empty for leaf), then dynamic Dynamic prefixes ---
-    const typedPrefixes = typedPaths.map(([, t]) => this.readColumnPrefix(t));
+    for (const [, t] of typedPaths) this.collectPrefixes(t, structureChildren);
     const dynamicStructures = dynamicPathNames.map((name) =>
       this.readFlattenedDynamicStructure(structureChildren, name),
     );
 
     // --- Data phase: typed path data, then dynamic path data ---
     const typedData = new Map<string, AstNode[]>();
-    typedPaths.forEach(([name, t], idx) => {
-      typedData.set(name, this.decodeColumnWithPrefix(t, rowCount, typedPrefixes[idx]));
-    });
+    for (const [name, t] of typedPaths) {
+      typedData.set(name, this.decodeColumnData(t, rowCount).values);
+    }
     const dynamicData = dynamicStructures.map((s) => this.readFlattenedDynamicData(s, rowCount));
 
     // Assemble per-row objects.
@@ -3635,7 +3851,7 @@ export class NativeDecoder extends FormatDecoder {
   private readFlattenedDynamicStructure(
     parentChildren: AstNode[],
     pathName: string,
-  ): { numTypes: number; typeNames: string[]; variants: ClickHouseType[]; variantPrefixes: unknown[] } {
+  ): { numTypes: number; typeNames: string[]; variants: ClickHouseType[] } {
     const start = this.reader.offset;
     const children: AstNode[] = [];
 
@@ -3667,7 +3883,7 @@ export class NativeDecoder extends FormatDecoder {
       typeNames.push(node.value as string);
     }
     const variants = typeNames.map((name) => parseType(name));
-    const variantPrefixes = variants.map((v) => this.readColumnPrefix(v));
+    for (const v of variants) this.collectPrefixes(v, children);
 
     parentChildren.push({
       id: this.generateId(),
@@ -3679,7 +3895,7 @@ export class NativeDecoder extends FormatDecoder {
       children,
     });
 
-    return { numTypes, typeNames, variants, variantPrefixes };
+    return { numTypes, typeNames, variants };
   }
 
   /**
@@ -3688,10 +3904,10 @@ export class NativeDecoder extends FormatDecoder {
    * num_types) followed by each type's dense run in wire order.
    */
   private readFlattenedDynamicData(
-    struct: { numTypes: number; typeNames: string[]; variants: ClickHouseType[]; variantPrefixes: unknown[] },
+    struct: { numTypes: number; typeNames: string[]; variants: ClickHouseType[] },
     rowCount: number,
   ): AstNode[] {
-    const { numTypes, typeNames, variants, variantPrefixes } = struct;
+    const { numTypes, typeNames, variants } = struct;
     const nullDiscriminator = numTypes;
     const discWidth = this.smallestIndexWidth(numTypes + 1);
 
@@ -3710,7 +3926,7 @@ export class NativeDecoder extends FormatDecoder {
     const runData: AstNode[][] = [];
     for (let t = 0; t < numTypes; t++) {
       runData[t] = countPerType[t] > 0
-        ? this.decodeColumnWithPrefix(variants[t], countPerType[t], variantPrefixes[t])
+        ? this.decodeColumnData(variants[t], countPerType[t]).values
         : [];
     }
 
@@ -4043,18 +4259,8 @@ export class NativeDecoder extends FormatDecoder {
    * 0=LineString, 1=MultiLineString, 2=MultiPolygon, 3=Point, 4=Polygon, 5=Ring
    */
   private decodeGeometryColumn(rowCount: number): AstNode[] {
-    // Geometry is internally a Variant type with alphabetically sorted geo types
-    const geoVariants: ClickHouseType[] = [
-      { kind: 'LineString' },      // 0
-      { kind: 'MultiLineString' }, // 1
-      { kind: 'MultiPolygon' },    // 2
-      { kind: 'Point' },           // 3
-      { kind: 'Polygon' },         // 4
-      { kind: 'Ring' },            // 5
-    ];
-
     // Decode as Variant
-    const variantValues = this.decodeVariantColumn(geoVariants, rowCount);
+    const variantValues = this.decodeVariantColumn(NativeDecoder.GEOMETRY_VARIANTS, rowCount);
 
     // Update type to Geometry
     for (const v of variantValues) {
