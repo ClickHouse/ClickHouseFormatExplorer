@@ -28,10 +28,10 @@
     "prepublishOnly": "npm run cli:build"
   },
   "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "react-resizable-panels": "^2.1.7",
-    "react-window": "^1.8.10",
+    "react-window": "^2.3.0",
     "zustand": "^5.0.3"
   },
   "devDependencies": {
@@ -39,9 +39,8 @@
     "@playwright/test": "^1.60.0",
     "@testcontainers/clickhouse": "^12.0.1",
     "@types/node": "^25.9.3",
-    "@types/react": "^18.3.18",
-    "@types/react-dom": "^18.3.5",
-    "@types/react-window": "^1.8.8",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.0.2",
     "electron": "^42.4.0",
     "electron-builder": "^26.7.0",
@@ -49,7 +48,7 @@
     "eslint": "^10.4.1",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
-    "globals": "^15.14.0",
+    "globals": "^17.11.0",
     "testcontainers": "^12.0.1",
     "tsx": "^4.22.4",
     "typescript": "~5.6.2",

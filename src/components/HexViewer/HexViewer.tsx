@@ -1,5 +1,5 @@
 import { useMemo, useCallback, useRef, useEffect } from 'react';
-import { FixedSizeList as List, FixedSizeList } from 'react-window';
+import { List, useListRef, type RowComponentProps } from 'react-window';
 import { useStore } from '../../store/store';
 import { AstNode } from '../../core/types/ast';
 import '../../styles/hex-viewer.css';
@@ -171,18 +171,19 @@ function getTypeColor(typeName: string): string {
   return colors[baseType] || '#9e9e9e';
 }
 
-interface HexRowProps {
-  index: number;
-  style: React.CSSProperties;
-  data: {
-    bytes: Uint8Array;
-    highlightMap: Map<number, HighlightInfo>;
-    onByteClick: (offset: number) => void;
-  };
+interface HexRowData {
+  bytes: Uint8Array;
+  highlightMap: Map<number, HighlightInfo>;
+  onByteClick: (offset: number) => void;
 }
 
-function HexRow({ index, style, data }: HexRowProps) {
-  const { bytes, highlightMap, onByteClick } = data;
+function HexRow({
+  index,
+  style,
+  bytes,
+  highlightMap,
+  onByteClick,
+}: RowComponentProps<HexRowData>) {
   const startOffset = index * BYTES_PER_ROW;
   const rowBytes = bytes.slice(startOffset, startOffset + BYTES_PER_ROW);
 
@@ -263,7 +264,7 @@ export function HexViewer() {
   const scrollRequest = useStore((s) => s.scrollRequest);
   const clearScrollTarget = useStore((s) => s.clearScrollTarget);
 
-  const listRef = useRef<FixedSizeList>(null);
+  const listRef = useListRef(null);
   const lastScrollId = useRef<number | null>(null);
 
   // Scroll to byte offset when requested
@@ -271,10 +272,10 @@ export function HexViewer() {
     if (scrollRequest && listRef.current && scrollRequest.id !== lastScrollId.current) {
       lastScrollId.current = scrollRequest.id;
       const rowIndex = Math.floor(scrollRequest.byteOffset / BYTES_PER_ROW);
-      listRef.current.scrollToItem(rowIndex, 'center');
+      listRef.current.scrollToRow({ index: rowIndex, align: 'center' });
       clearScrollTarget();
     }
-  }, [scrollRequest, clearScrollTarget]);
+  }, [scrollRequest, clearScrollTarget, listRef]);
 
   const highlightMap = useMemo(
     () => buildHighlightMap(parsedData, activeNodeId, hoveredNodeId),
@@ -332,20 +333,16 @@ export function HexViewer() {
   return (
     <div className="hex-viewer">
       <List
-        ref={listRef}
-        height={window.innerHeight - 150} // Approximate, will be resized by parent
-        itemCount={rowCount}
-        itemSize={22}
-        width="100%"
-        itemData={{
+        listRef={listRef}
+        rowComponent={HexRow}
+        rowCount={rowCount}
+        rowHeight={22}
+        rowProps={{
           bytes: rawData,
           highlightMap,
           onByteClick: handleByteClick,
         }}
-        style={{ height: '100%' }}
-      >
-        {HexRow}
-      </List>
+      />
     </div>
   );
 }
