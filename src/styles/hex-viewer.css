@@ -1,9 +1,11 @@
 .hex-viewer {
+  display: flex;
+  flex-direction: column;
   font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.6;
   height: 100%;
-  overflow: auto;
+  overflow: hidden;
   background: var(--bg-secondary);
 }
 

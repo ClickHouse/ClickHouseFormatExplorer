@@ -26,7 +26,7 @@ export function QueryInput() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [shareLabel, setShareLabel] = useState('Share');
   const [hostUrl, setHostUrl] = useState('http://localhost:8123');
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // Load connection config in Electron mode
   useEffect(() => {
