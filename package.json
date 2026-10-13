@@ -32,7 +32,7 @@
     "react-dom": "^19.2.8",
     "react-resizable-panels": "^2.1.7",
     "react-window": "^2.3.0",
-    "zustand": "^5.0.3"
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
